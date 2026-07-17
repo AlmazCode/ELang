@@ -342,6 +342,28 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
             return type_new(TYPE_UNKNOWN);
         }
 
+        case AST_TRY_EXPR: {
+            /* expr? — returns the inner Ok type */
+            type_info_t *inner = sem_infer_expr(ctx, node->as.try_expr.operand);
+            /* for now, just return the inner type */
+            return inner ? type_copy(inner) : type_new(TYPE_UNKNOWN);
+        }
+
+        case AST_CATCH_EXPR: {
+            /* expr catch { handler } — returns handler's type */
+            return sem_infer_expr(ctx, node->as.catch_expr.handler);
+        }
+
+        case AST_PANIC_EXPR: {
+            /* panic(msg) — returns void (never returns actually) */
+            return type_new(TYPE_VOID);
+        }
+
+        case AST_ASSERT_EXPR: {
+            /* assert(cond, msg) — returns void */
+            return type_new(TYPE_VOID);
+        }
+
         case AST_TUPLE: {
             /* tuple type */
             type_info_t *t = type_new(TYPE_UNKNOWN);
@@ -455,6 +477,16 @@ void sem_fold_constants(ast_node_t *node) {
         case AST_PIPE:
             sem_fold_constants(node->as.pipe.left);
             sem_fold_constants(node->as.pipe.right);
+            break;
+        case AST_TRY_EXPR: sem_fold_constants(node->as.try_expr.operand); break;
+        case AST_CATCH_EXPR:
+            sem_fold_constants(node->as.catch_expr.operand);
+            sem_fold_constants(node->as.catch_expr.handler);
+            break;
+        case AST_PANIC_EXPR: sem_fold_constants(node->as.panic_expr.message); break;
+        case AST_ASSERT_EXPR:
+            sem_fold_constants(node->as.assert_expr.condition);
+            sem_fold_constants(node->as.assert_expr.message);
             break;
         case AST_DEFER: sem_fold_constants(node->as.defer_stmt.expr); break;
         case AST_MATCH:
@@ -642,6 +674,20 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
         }
         case AST_DEFER:
             sem_fold_constants(node->as.defer_stmt.expr);
+            break;
+        case AST_TRY_EXPR:
+            sem_fold_constants(node->as.try_expr.operand);
+            break;
+        case AST_CATCH_EXPR:
+            sem_fold_constants(node->as.catch_expr.operand);
+            sem_block(ctx, node->as.catch_expr.handler);
+            break;
+        case AST_PANIC_EXPR:
+            sem_fold_constants(node->as.panic_expr.message);
+            break;
+        case AST_ASSERT_EXPR:
+            sem_fold_constants(node->as.assert_expr.condition);
+            sem_fold_constants(node->as.assert_expr.message);
             break;
         case AST_STRUCT_DECL:
         case AST_ENUM_DECL:

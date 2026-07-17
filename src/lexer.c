@@ -28,9 +28,10 @@ static token_type_t check_keyword(const char *w, size_t len) {
         {"i8",2,TOKEN_I8},{"i16",3,TOKEN_I16},{"i32",3,TOKEN_I32},{"i64",3,TOKEN_I64},
         {"u8",2,TOKEN_U8},{"u16",3,TOKEN_U16},{"u32",3,TOKEN_U32},{"u64",3,TOKEN_U64},
         {"f32",3,TOKEN_F32},{"f64",3,TOKEN_F64},{"bool",4,TOKEN_BOOL},{"char",4,TOKEN_CHAR},
-        {"string",6,TOKEN_STRING},{"error",5,TOKEN_ERROR_TYPE},{"ok",2,TOKEN_OK},{"err",3,TOKEN_ERR},
+        {"string",6,TOKEN_STRING},{"error",5,TOKEN_ERROR_TYPE},
         {"alloc",5,TOKEN_ALLOC},{"free",4,TOKEN_FREE},{"syscall",7,TOKEN_SYSCALL},
-        {"panic",5,TOKEN_PANIC},{"Ok",2,TOKEN_OK},{"Err",3,TOKEN_ERR},
+        {"panic",5,TOKEN_PANIC},{"catch",5,TOKEN_CATCH},{"assert",6,TOKEN_ASSERT},
+        {"Ok",2,TOKEN_OK},{"Err",3,TOKEN_ERR},
         {"when",4,TOKEN_WHEN},{"defer",5,TOKEN_DEFER},{"using",5,TOKEN_USING},
     };
     for (size_t i = 0; i < sizeof(kw)/sizeof(kw[0]); i++)
@@ -119,6 +120,7 @@ token_t lexer_next_token(lexer_t *l) {
                   return token_create(TOKEN_COLON,":",1,line,col);
         case ';': return token_create(TOKEN_SEMICOLON,";",1,line,col);
         case ',': return token_create(TOKEN_COMMA,",",1,line,col);
+        case '?': return token_create(TOKEN_QUESTION,"?",1,line,col);
         default: return token_create(TOKEN_ERROR, &l->source[l->pos-1], 1, line, col);
     }
 }

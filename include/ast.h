@@ -16,6 +16,7 @@ typedef enum {
     AST_MATCH, AST_STRUCT_LITERAL, AST_ENUM_LITERAL, AST_OK_EXPR, AST_ERR_EXPR,
     AST_PIPE, AST_DEFER, AST_WHEN, AST_TUPLE, AST_TUPLE_ASSIGN,
     AST_USING, AST_PROGRAM,
+    AST_TRY_EXPR, AST_CATCH_EXPR, AST_PANIC_EXPR, AST_ASSERT_EXPR,
 } ast_type_t;
 
 typedef struct ast_node ast_node_t;
@@ -68,6 +69,10 @@ struct ast_node {
         struct { char **names; int name_count; ast_node_t *value; } tuple_assign;
         struct { char *path; size_t path_len; } using_decl;
         struct { ast_node_t **declarations; int count; } program;
+        struct { ast_node_t *operand; } try_expr;           /* expr? — error propagation */
+        struct { ast_node_t *operand, *handler; } catch_expr; /* expr catch { handler } */
+        struct { ast_node_t *message; } panic_expr;          /* panic(msg) */
+        struct { ast_node_t *condition, *message; } assert_expr; /* assert(cond, msg) */
     } as;
 };
 

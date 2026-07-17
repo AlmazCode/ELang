@@ -1,6 +1,5 @@
 # Build artifacts
 *.o
-*.asm
 bin/
 lib/build/
 

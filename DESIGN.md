@@ -247,17 +247,71 @@ fn main() -> void {
 ```
 
 ### Error Handling with Pipeline
-```elang
-fn parse_config(raw: string) -> Result<Config, string> {
-    let lines = raw |> str_split("\n") |> filter(str_not_empty)
 
-    when lines {
-        [] => Err("empty config")
-        _ => {
-            let kv = lines |> map(parse_line) |> collect()
-            Ok(Config { lines: kv })
-        }
-    }
+ELang uses a tagged-union Result type for error handling. Ok/Err values are encoded
+using the lowest bit: bit 0 = 0 for Ok, bit 0 = 1 for Err. The actual value is
+stored in the upper 63 bits (shifted left by 1).
+
+```elang
+fn divide(a: i64, b: i64) -> i64 {
+    if b == 0 { return Err(0) }
+    return Ok(a / b)
+}
+
+// Match — pattern matching on Ok/Err
+let result = match divide(100, 7) {
+    Ok(val) => val
+    Err(e) => 0
+}
+
+// ? operator — propagate errors up the call stack
+fn double_divide(a: i64, b: i64) -> i64 {
+    let result = divide(a, b)?    // if Err, return immediately
+    return Ok(result * 2)
+}
+
+// catch — handle errors inline
+let safe = divide(10, 0) catch { 0 }    // returns 0 on error
+
+// panic — abort with message
+panic("unreachable")
+
+// assert — check condition, panic on failure
+assert(x > 0, "x must be positive")
+```
+
+### Result Encoding
+
+| Value | Encoding | Bit 0 |
+|-------|----------|-------|
+| `Ok(val)` | `val << 1` | 0 |
+| `Err(val)` | `(val << 1) \| 1` | 1 |
+
+### Error Propagation with `?`
+
+The `?` operator checks if a Result is Err. If so, it runs any pending `defer`
+statements and returns the error immediately. If Ok, it extracts the value:
+
+```elang
+fn read_config(path: string) -> i64 {
+    let fd = sys_open(path, 0, 0)?
+    defer sys_close(fd)
+    // if open failed, returns Err immediately (defer runs first)
+    // if ok, fd contains the file descriptor
+    Ok(fd)
+}
+```
+
+### Catch Blocks
+
+`catch` provides inline error handling without leaving the current scope:
+
+```elang
+// On success: returns the Ok value
+// On error: runs the catch block and returns its value
+let value = risky_operation() catch {
+    print_str("operation failed\n")
+    0    // fallback value
 }
 ```
 

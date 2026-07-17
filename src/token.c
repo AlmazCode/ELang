@@ -30,6 +30,8 @@ const char *token_type_name(token_type_t t) {
         case TOKEN_PIPE_ARROW: return "|>"; case TOKEN_WHEN: return "when";
         case TOKEN_DEFER: return "defer"; case TOKEN_USING: return "using";
         case TOKEN_COLONCOLON: return "::";
+        case TOKEN_CATCH: return "catch"; case TOKEN_PANIC: return "panic";
+        case TOKEN_ASSERT: return "assert"; case TOKEN_QUESTION: return "?";
         case TOKEN_NEWLINE: return "newline"; case TOKEN_EOF: return "EOF";
         case TOKEN_ERROR: return "ERROR";
         default: return "?";

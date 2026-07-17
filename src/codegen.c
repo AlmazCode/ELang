@@ -205,6 +205,45 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             }
             /* rax = stack pointer to first element (for now, just leave values on stack) */
             break; }
+        case AST_TRY_EXPR: {
+            /* expr? — check if result is Err (bit 0 == 1), if so propagate (return) */
+            gen_expr(cg, n->as.try_expr.operand);
+            emit(cg, "mov rbx, rax");
+            emit(cg, "and rbx, 1");
+            emit(cg, "cmp rbx, 1");
+            int ok_label = new_label(cg);
+            emit(cg, "jne L%d", ok_label);
+            /* Err case: run defers and return the error value */
+            emit_defers(cg, 0);
+            emit(cg, "mov rsp, rbp"); emit(cg, "pop rbp"); emit(cg, "ret");
+            fprintf(cg->output, "L%d:\n", ok_label);
+            /* Ok case: extract value (shift right 1 to undo the shl 1) */
+            emit(cg, "shr rax, 1");
+            break; }
+        case AST_CATCH_EXPR: {
+            /* expr catch { handler } */
+            int err_label = new_label(cg);
+            int end_label = new_label(cg);
+            gen_expr(cg, n->as.catch_expr.operand);
+            emit(cg, "mov rbx, rax");
+            emit(cg, "and rbx, 1");
+            emit(cg, "cmp rbx, 1");
+            emit(cg, "je L%d", err_label);
+            /* Ok case: extract value */
+            emit(cg, "shr rax, 1");
+            emit(cg, "jmp L%d", end_label);
+            /* Err case: run handler */
+            fprintf(cg->output, "L%d:\n", err_label);
+            emit(cg, "shr rax, 1");
+            int err_off = add_sym(cg, "__catch_err", 8);
+            emit(cg, "mov [rbp-%d], rax", err_off);
+            int saved_scope = cg->scope_depth;
+            cg->scope_depth++;
+            gen_node(cg, n->as.catch_expr.handler);
+            if (!cg->returned) emit_defers(cg, cg->scope_depth);
+            cg->scope_depth = saved_scope;
+            fprintf(cg->output, "L%d:\n", end_label);
+            break; }
         default: break;
     }
 }
@@ -435,6 +474,69 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
         case AST_USING:
             fprintf(cg->output, "; using \"%.*s\"\n", (int)n->as.using_decl.path_len, n->as.using_decl.path); break;
         case AST_IMPORT_DECL: fprintf(cg->output, "; import \"%.*s\"\n", (int)n->as.import.path_len, n->as.import.path); break;
+        case AST_TRY_EXPR: {
+            /* expr? — check if result is Err (bit 0 == 1), if so propagate (return) */
+            gen_expr(cg, n->as.try_expr.operand);
+            emit(cg, "mov rbx, rax");
+            emit(cg, "and rbx, 1");
+            emit(cg, "cmp rbx, 1");
+            int ok_label = new_label(cg);
+            emit(cg, "jne L%d", ok_label);
+            /* Err case: run defers and return the error value */
+            emit_defers(cg, 0);
+            emit(cg, "mov rsp, rbp"); emit(cg, "pop rbp"); emit(cg, "ret");
+            fprintf(cg->output, "L%d:\n", ok_label);
+            /* Ok case: extract value (shift right 1 to undo the shl 1) */
+            emit(cg, "shr rax, 1");
+            break; }
+        case AST_CATCH_EXPR: {
+            /* expr catch { handler } */
+            int err_label = new_label(cg);
+            int end_label = new_label(cg);
+            gen_expr(cg, n->as.catch_expr.operand);
+            emit(cg, "mov rbx, rax");
+            emit(cg, "and rbx, 1");
+            emit(cg, "cmp rbx, 1");
+            emit(cg, "je L%d", err_label);
+            /* Ok case: extract value */
+            emit(cg, "shr rax, 1");
+            emit(cg, "jmp L%d", end_label);
+            /* Err case: run handler */
+            fprintf(cg->output, "L%d:\n", err_label);
+            emit(cg, "shr rax, 1");
+            /* store error value in a temp variable for the handler */
+            int err_off = add_sym(cg, "__catch_err", 8);
+            emit(cg, "mov [rbp-%d], rax", err_off);
+            int saved_scope = cg->scope_depth;
+            cg->scope_depth++;
+            gen_node(cg, n->as.catch_expr.handler);
+            if (!cg->returned) emit_defers(cg, cg->scope_depth);
+            cg->scope_depth = saved_scope;
+            fprintf(cg->output, "L%d:\n", end_label);
+            break; }
+        case AST_PANIC_EXPR: {
+            /* panic(msg) — call panic_handler */
+            if (n->as.panic_expr.message) {
+                gen_expr(cg, n->as.panic_expr.message);
+                emit(cg, "mov rdi, rax");
+            }
+            fprintf(cg->output, "    call ");
+            emit_name(cg, "panic_handler", 13);
+            fprintf(cg->output, "\n");
+            cg->returned = 1;
+            break; }
+        case AST_ASSERT_EXPR: {
+            /* assert(cond, msg) — call assert_handler */
+            gen_expr(cg, n->as.assert_expr.condition);
+            emit(cg, "mov rdi, rax");
+            if (n->as.assert_expr.message) {
+                gen_expr(cg, n->as.assert_expr.message);
+                emit(cg, "mov rsi, rax");
+            }
+            fprintf(cg->output, "    call ");
+            emit_name(cg, "assert_handler", 14);
+            fprintf(cg->output, "\n");
+            break; }
         default: gen_expr(cg, n); break;
     }
 }
@@ -482,6 +584,10 @@ static void collect_strings(codegen_t *cg, ast_node_t *n) {
         case AST_OK_EXPR: collect_strings(cg, n->as.ok_expr.value); break;
         case AST_ERR_EXPR: collect_strings(cg, n->as.err_expr.value); break;
         case AST_DEFER: collect_strings(cg, n->as.defer_stmt.expr); break;
+        case AST_TRY_EXPR: collect_strings(cg, n->as.try_expr.operand); break;
+        case AST_CATCH_EXPR: collect_strings(cg, n->as.catch_expr.operand); collect_strings(cg, n->as.catch_expr.handler); break;
+        case AST_PANIC_EXPR: collect_strings(cg, n->as.panic_expr.message); break;
+        case AST_ASSERT_EXPR: collect_strings(cg, n->as.assert_expr.condition); collect_strings(cg, n->as.assert_expr.message); break;
         case AST_TUPLE: for (int i = 0; i < n->as.tuple.count; i++) collect_strings(cg, n->as.tuple.elements[i]); break;
         case AST_TUPLE_ASSIGN: collect_strings(cg, n->as.tuple_assign.value); break;
         case AST_PROGRAM: for (int i = 0; i < n->as.program.count; i++) collect_strings(cg, n->as.program.declarations[i]); break;
@@ -521,7 +627,8 @@ int codegen_program(codegen_t *cg, ast_node_t *prog) {
         "read_input", "exit",
         "str_len", "str_dup", "str_cmp", "str_cat",
         "sys_open", "sys_close", "sys_read", "sys_write",
-        "sys_getpid", "sys_exit", "sys_brk"
+        "sys_getpid", "sys_exit", "sys_brk",
+        "panic_handler", "assert_handler"
     };
     for (int i = 0; i < (int)(sizeof(externs)/sizeof(externs[0])); i++) {
         fprintf(cg->output, "extern %s\n", externs[i]);

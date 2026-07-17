@@ -83,7 +83,22 @@ static ast_node_t *parse_primary(parser_t *p) {
                         call->as.call.args = realloc(call->as.call.args, sizeof(void*) * call->as.call.arg_count);
                         call->as.call.args[call->as.call.arg_count - 1] = arg; }
                 }
-                expect(p, TOKEN_RPAREN); return call;
+                expect(p, TOKEN_RPAREN);
+                /* handle postfix ? after calls */
+                if (p->current.type == TOKEN_QUESTION) {
+                    advance(p);
+                    ast_node_t *try_n = ast_new(AST_TRY_EXPR, t.line, t.col);
+                    try_n->as.try_expr.operand = call;
+                    return try_n;
+                }
+                return call;
+            }
+            /* handle postfix ? after qualified access */
+            if (p->current.type == TOKEN_QUESTION) {
+                advance(p);
+                ast_node_t *try_n = ast_new(AST_TRY_EXPR, t.line, t.col);
+                try_n->as.try_expr.operand = n;
+                return try_n;
             }
             return n;
         }
@@ -124,6 +139,18 @@ static ast_node_t *parse_primary(parser_t *p) {
         }
         case TOKEN_MATCH: return parse_match(p);
         case TOKEN_WHEN: return parse_when(p);
+        case TOKEN_PANIC: {
+            ast_node_t *n = ast_new(AST_PANIC_EXPR, t.line, t.col);
+            advance(p); expect(p, TOKEN_LPAREN);
+            n->as.panic_expr.message = parse_expr(p);
+            expect(p, TOKEN_RPAREN); return n; }
+        case TOKEN_ASSERT: {
+            ast_node_t *n = ast_new(AST_ASSERT_EXPR, t.line, t.col);
+            advance(p); expect(p, TOKEN_LPAREN);
+            n->as.assert_expr.condition = parse_expr(p);
+            expect(p, TOKEN_COMMA);
+            n->as.assert_expr.message = parse_expr(p);
+            expect(p, TOKEN_RPAREN); return n; }
         default: fprintf(stderr, "Parse error at %d:%d: unexpected %s\n", t.line, t.col, token_type_name(t.type));
             advance(p); return NULL;
     }
@@ -171,6 +198,15 @@ static ast_node_t *parse_expr(parser_t *p) {
         ast_node_t *v = parse_expr(p);
         ast_node_t *a = ast_new(AST_ASSIGN, e->line, e->col);
         a->as.assign.target = e; a->as.assign.value = v; return a;
+    }
+    /* handle postfix: expr catch { handler } */
+    if (e && p->current.type == TOKEN_CATCH) {
+        advance(p); skip_nl(p);
+        ast_node_t *handler = parse_block(p);
+        ast_node_t *c = ast_new(AST_CATCH_EXPR, e->line, e->col);
+        c->as.catch_expr.operand = e;
+        c->as.catch_expr.handler = handler;
+        return c;
     }
     return e;
 }

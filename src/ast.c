@@ -26,6 +26,10 @@ void free_node(ast_node_t *n) {
         case AST_TUPLE_ASSIGN: for (int i = 0; i < n->as.tuple_assign.name_count; i++) free(n->as.tuple_assign.names[i]);
             free(n->as.tuple_assign.names); free_node(n->as.tuple_assign.value); break;
         case AST_USING: free(n->as.using_decl.path); break;
+        case AST_TRY_EXPR: free_node(n->as.try_expr.operand); break;
+        case AST_CATCH_EXPR: free_node(n->as.catch_expr.operand); free_node(n->as.catch_expr.handler); break;
+        case AST_PANIC_EXPR: free_node(n->as.panic_expr.message); break;
+        case AST_ASSERT_EXPR: free_node(n->as.assert_expr.condition); free_node(n->as.assert_expr.message); break;
         case AST_CALL: free_node(n->as.call.callee);
             for (int i = 0; i < n->as.call.arg_count; i++) free_node(n->as.call.args[i]);
             free(n->as.call.args); break;
