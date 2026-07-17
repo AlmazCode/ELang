@@ -137,6 +137,24 @@ static ast_node_t *parse_primary(parser_t *p) {
             }
             expect(p, TOKEN_RPAREN); return first;
         }
+        case TOKEN_LBRACKET: {
+            /* array literal: [1, 2, 3] */
+            ast_node_t *n = ast_new(AST_ARRAY_LITERAL, t.line, t.col);
+            n->as.array_literal.elements = NULL; n->as.array_literal.count = 0;
+            advance(p);
+            while (p->current.type != TOKEN_RBRACKET && p->current.type != TOKEN_EOF) {
+                if (n->as.array_literal.count > 0) expect(p, TOKEN_COMMA);
+                skip_nl(p);
+                ast_node_t *el = parse_expr(p);
+                if (el) {
+                    n->as.array_literal.count++;
+                    n->as.array_literal.elements = realloc(n->as.array_literal.elements, sizeof(void*) * n->as.array_literal.count);
+                    n->as.array_literal.elements[n->as.array_literal.count - 1] = el;
+                }
+            }
+            expect(p, TOKEN_RBRACKET);
+            return n;
+        }
         case TOKEN_MATCH: return parse_match(p);
         case TOKEN_WHEN: return parse_when(p);
         case TOKEN_PANIC: {
@@ -158,6 +176,27 @@ static ast_node_t *parse_primary(parser_t *p) {
 
 static ast_node_t *parse_binary(parser_t *p, int min_prec) {
     ast_node_t *left = parse_primary(p);
+    /* handle postfix index access: expr[expr] */
+    while (left && p->current.type == TOKEN_LBRACKET) {
+        advance(p);
+        ast_node_t *index = parse_expr(p);
+        expect(p, TOKEN_RBRACKET);
+        ast_node_t *n = ast_new(AST_INDEX, left->line, left->col);
+        n->as.binary.left = left;
+        n->as.binary.right = index;
+        n->as.binary.op = TOKEN_LBRACKET;
+        left = n;
+    }
+    /* handle postfix .len */
+    while (left && p->current.type == TOKEN_DOT &&
+           p->peek.type == TOKEN_IDENT && p->peek.length == 3 &&
+           memcmp(p->peek.value, "len", 3) == 0) {
+        advance(p); /* dot */
+        advance(p); /* len */
+        ast_node_t *n = ast_new(AST_LEN_EXPR, left->line, left->col);
+        n->as.len_expr.operand = left;
+        left = n;
+    }
     while (1) {
         token_type_t op = p->current.type; int prec = 0;
         switch (op) {

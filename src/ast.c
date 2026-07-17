@@ -30,6 +30,9 @@ void free_node(ast_node_t *n) {
         case AST_CATCH_EXPR: free_node(n->as.catch_expr.operand); free_node(n->as.catch_expr.handler); break;
         case AST_PANIC_EXPR: free_node(n->as.panic_expr.message); break;
         case AST_ASSERT_EXPR: free_node(n->as.assert_expr.condition); free_node(n->as.assert_expr.message); break;
+        case AST_ARRAY_LITERAL: for (int i = 0; i < n->as.array_literal.count; i++) free_node(n->as.array_literal.elements[i]);
+            free(n->as.array_literal.elements); break;
+        case AST_LEN_EXPR: free_node(n->as.len_expr.operand); break;
         case AST_CALL: free_node(n->as.call.callee);
             for (int i = 0; i < n->as.call.arg_count; i++) free_node(n->as.call.args[i]);
             free(n->as.call.args); break;

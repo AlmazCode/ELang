@@ -205,6 +205,35 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             }
             /* rax = stack pointer to first element (for now, just leave values on stack) */
             break; }
+        case AST_ARRAY_LITERAL: {
+            /* [1, 2, 3] — allocate on stack, store elements, return pointer */
+            int count = n->as.array_literal.count;
+            int total = (count + 1) * 8; /* +1 for length qword */
+            emit(cg, "sub rsp, %d", total);
+            /* store length */
+            emit(cg, "mov qword [rsp], %d", count);
+            /* store elements */
+            for (int i = 0; i < count; i++) {
+                gen_expr(cg, n->as.array_literal.elements[i]);
+                emit(cg, "mov [rsp+%d], rax", 8 + i * 8);
+            }
+            /* rax = pointer to first element (skip length qword) */
+            emit(cg, "lea rax, [rsp+8]");
+            break; }
+        case AST_INDEX: {
+            /* arr[i] — compute base + index*8, load value */
+            gen_expr(cg, n->as.binary.left);  /* rax = array pointer */
+            emit(cg, "push rax");
+            gen_expr(cg, n->as.binary.right); /* rax = index */
+            emit(cg, "mov rcx, rax");
+            emit(cg, "pop rax");              /* rax = array pointer */
+            emit(cg, "mov rax, [rax+rcx*8]"); /* load element */
+            break; }
+        case AST_LEN_EXPR: {
+            /* arr.len — load length from [pointer - 8] */
+            gen_expr(cg, n->as.len_expr.operand); /* rax = array pointer */
+            emit(cg, "mov rax, [rax-8]");         /* length is stored just before data */
+            break; }
         case AST_TRY_EXPR: {
             /* expr? — check if result is Err (bit 0 == 1), if so propagate (return) */
             gen_expr(cg, n->as.try_expr.operand);
@@ -589,6 +618,8 @@ static void collect_strings(codegen_t *cg, ast_node_t *n) {
         case AST_PANIC_EXPR: collect_strings(cg, n->as.panic_expr.message); break;
         case AST_ASSERT_EXPR: collect_strings(cg, n->as.assert_expr.condition); collect_strings(cg, n->as.assert_expr.message); break;
         case AST_TUPLE: for (int i = 0; i < n->as.tuple.count; i++) collect_strings(cg, n->as.tuple.elements[i]); break;
+        case AST_ARRAY_LITERAL: for (int i = 0; i < n->as.array_literal.count; i++) collect_strings(cg, n->as.array_literal.elements[i]); break;
+        case AST_LEN_EXPR: collect_strings(cg, n->as.len_expr.operand); break;
         case AST_TUPLE_ASSIGN: collect_strings(cg, n->as.tuple_assign.value); break;
         case AST_PROGRAM: for (int i = 0; i < n->as.program.count; i++) collect_strings(cg, n->as.program.declarations[i]); break;
         default: break;

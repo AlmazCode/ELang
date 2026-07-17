@@ -169,7 +169,60 @@ io::print("hello")
 
 ---
 
-## Feature 8: Named Arguments
+## Feature 8: Arrays
+
+Stack-allocated fixed-size arrays with literal syntax, indexing, and `.len`.
+
+```elang
+fn main() -> void {
+    // Array literal — type inferred from elements
+    let arr = [10, 20, 30, 40, 50]
+
+    // Index access (0-based)
+    let first = arr[0]   // 10
+    let third = arr[2]   // 30
+
+    // Length property
+    let len = arr.len    // 5
+
+    // Arrays in loops
+    let sum = 0
+    let i = 0
+    while i < arr.len {
+        sum = sum + arr[i]
+        i = i + 1
+    }
+
+    // Array with expressions
+    let x = 5
+    let arr2 = [x, x + 1, x * 2]  // [5, 6, 10]
+}
+```
+
+### Storage Model
+
+Arrays are stack-allocated. The layout in memory:
+
+```
+[rsp]      → length (i64)
+[rsp+8]    → element[0]
+[rsp+16]   → element[1]
+...
+[rsp+8+N*8] → element[N-1]
+```
+
+The array variable holds a pointer to `element[0]` (i.e., `rsp+8`). `.len` reads from `[pointer-8]`.
+
+### Limitations (v1)
+
+- Maximum 32 elements (256 bytes on stack)
+- All elements must be the same type (inferred from first element)
+- Elements stored as `i64` (8 bytes each)
+- No slices, no heap allocation (planned for future)
+
+---
+
+## Feature 9: Named Arguments
 
 ```elang
 fn connect(host: string, port: u16, timeout: u32) -> socket { ... }
@@ -319,15 +372,19 @@ let value = risky_operation() catch {
 
 ## Implementation Priority
 
-| Feature | Complexity | Impact |
-|---------|-----------|--------|
-| Implicit return | Low | High — less boilerplate everywhere |
-| `\|>` pipeline | Medium | High — defines the language's identity |
-| `when` expression | Low | Medium — cleaner than if-as-expression |
-| `defer` | Medium | High — essential for systems programming |
-| Optional braces (`=>`) | Low | Medium — cleaner single-line functions |
-| Tuple unpacking | Medium | Medium — multiple returns become natural |
-| `using` imports | Low | Low — nice to have |
-| Named arguments | Medium | Low — quality of life |
+| Feature | Complexity | Impact | Status |
+|---------|-----------|--------|--------|
+| Implicit return | Low | High — less boilerplate everywhere | Done |
+| `\|>` pipeline | Medium | High — defines the language's identity | Done |
+| `when` expression | Low | Medium — cleaner than if-as-expression | Done |
+| `defer` | Medium | High — essential for systems programming | Done |
+| Optional braces (`=>`) | Low | Medium — cleaner single-line functions | Done |
+| Tuple unpacking | Medium | Medium — multiple returns become natural | Done |
+| `using` imports | Low | Low — nice to have | Done |
+| **Arrays** | **Medium** | **High — enables practical programs** | **Done** |
+| Struct methods | Medium | High — OOP-style organization | Planned |
+| Enum variants with data | Medium | High — algebraic data types | Planned |
+| Error handling (`?`, `catch`) | Medium | High — ergonomic error propagation | Done |
+| Named arguments | Medium | Low — quality of life | Planned |
 
 Start with implicit return + pipeline + when. Those three define ELang's character.

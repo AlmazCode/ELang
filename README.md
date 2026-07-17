@@ -35,6 +35,7 @@ ld output.o lib/build/syscalls.o -o output
 | **Pattern matching** | `match` с `Ok`/`Err` для обработки ошибок |
 | **Обработка ошибок** | `?` operator, `catch` блоки, `panic`, `assert` |
 | **`defer`** | Автоматическая очистка ресурсов при выходе из scope |
+| **Массивы** | Литералы `[1, 2, 3]`, доступ `arr[i]`, длина `arr.len` |
 | **Constant folding** | Вычисление константных выражений во время компиляции |
 | **Нулевой runtime** | Нет сборщика мусора, нет VM, нет скрытых аллокаций |
 
@@ -202,6 +203,41 @@ fn read_file(path: string) -> string {
 }
 ```
 
+### Массивы
+
+Литералы, доступ по индексу, свойство `.len`:
+
+```elang
+fn main() -> void {
+    // Создание массива
+    let arr = [10, 20, 30, 40, 50]
+
+    // Доступ по индексу (с 0)
+    let first = arr[0]   // 10
+    let third = arr[2]   // 30
+
+    // Длина массива
+    let length = arr.len  // 5
+
+    // Массив в цикле
+    let sum = 0
+    let i = 0
+    while i < arr.len {
+        sum = sum + arr[i]
+        i = i + 1
+    }
+
+    // Массив с выражениями
+    let x = 5
+    let arr2 = [x, x + 1, x * 2]  // [5, 6, 10]
+}
+```
+
+**Ограничения v1:**
+- Максимум 32 элемента (стековый фрейм)
+- Все элементы одного типа (выводится из первого элемента)
+- Элементы хранятся как `i64` (8 байт каждый)
+
 ### Tuple unpacking
 
 ```elang
@@ -219,6 +255,8 @@ let (a, b) = (b, a)
 
 ### Структуры и перечисления
 
+Структуры объявляются, но создание экземпляров и методы ещё не реализованы:
+
 ```elang
 struct Point {
     x: f64
@@ -229,20 +267,10 @@ enum Color {
     Red
     Green
     Blue
-    RGB(i64, i64, i64)
-}
-
-// Создание экземпляров
-let p = Point { x: 1.0, y: 2.0 }
-let c = Color::RGB(255, 0, 128)
-
-// Pattern matching по enum
-match c {
-    Color::Red => print_str("красный")
-    Color::RGB(r, g, b) => { print_int(r); print_int(g); print_int(b) }
-    _ => print_str("другой")
 }
 ```
+
+> **Примечание:** Методы структур и enum variants с данными запланированы в дорожной карте.
 
 ### Модули
 
@@ -262,13 +290,15 @@ fn main() -> void {
 
 ### Named Arguments
 
+> **Примечание:** Именованные аргументы запланированы, но пока не реализованы.
+
 ```elang
 fn connect(host: string, port: u16, timeout: u32) -> socket { ... }
 
-// Вызов с именованными аргументами (порядок не важен)
+// Будущий синтаксис:
 let s = connect(port: 8080, host: "localhost", timeout: 5000)
 
-// Позиционные аргументы тоже работают
+// Сейчас работают только позиционные аргументы
 let s = connect("localhost", 8080, 5000)
 ```
 
@@ -303,53 +333,43 @@ fn main() -> void {
 ```elang
 fn main() -> void {
     let sum = 42 |> add(100)
-    "Sum: " |> print() |> print(sum) |> print("\n")
+    print_str("Sum: ")
+    print_int(sum)
+    print_str("\n")
 
     let result = match divide(10, 2) {
         Ok(val) => val
         Err(e) => 0
     }
-    "Result: " |> print() |> print(result) |> print("\n")
+    print_str("Result: ")
+    print_int(result)
+    print_str("\n")
 }
 ```
 
-### Полный пример с обработкой ошибок
+### Массивы
 
 ```elang
-using "io"
-using "math"
-
-fn process(data: string) -> string {
-    data
-        |> str_trim()
-        |> str_lower()
-        |> str_split(" ")
-        |> map(str_upper)
-        |> str_join("-")
-}
-
 fn main() -> void {
-    let input = io::read_line()
-    let result = process(input)
+    let arr = [10, 20, 30, 40, 50]
+    print_str("First: ")
+    print_int(arr[0])
+    print_str("\n")
 
-    when str_len(result) > 0 {
-        io::print(result)
-    } else {
-        io::print("(пусто)")
+    print_str("Length: ")
+    print_int(arr.len)
+    print_str("\n")
+
+    // Сумма элементов
+    let sum = 0
+    let i = 0
+    while i < arr.len {
+        sum = sum + arr[i]
+        i = i + 1
     }
-}
-
-// Обработка ошибок с pipeline
-fn parse_config(raw: string) -> Result<Config, Error> {
-    let lines = raw |> str_split("\n") |> filter(str_not_empty)
-
-    when lines {
-        [] => Err(error_new(InvalidInput, "пустой конфиг"))
-        _ => {
-            let kv = lines |> map(parse_line) |> collect()
-            Ok(Config { lines: kv })
-        }
-    }
+    print_str("Sum: ")
+    print_int(sum)
+    print_str("\n")
 }
 ```
 
@@ -363,32 +383,13 @@ fn parse_config(raw: string) -> Result<Config, Error> {
 |---------|----------|
 | `print_str(s)` | Вывод строки |
 | `print_int(n)` | Вывод целого числа |
-| `print_hex(n)` | Вывод числа в.hex формате |
-| `print(c)` | Универсальный вывод |
+| `print_hex(n)` | Вывод числа в hex формате |
 
 ### Строки
 
 | Функция | Описание |
 |---------|----------|
 | `str_len(s)` | Длина строки |
-| `str_dup(s)` | Дублирование строки |
-| `str_cmp(a, b)` | Сравнение строк |
-| `str_cat(a, b)` | Конкатенация |
-| `str_split(s, delim)` | Разделение строки |
-| `str_trim(s)` | Удаление пробелов |
-| `str_lower(s)` | В нижний регистр |
-| `str_upper(s)` | В верхний регистр |
-
-### Математика
-
-| Функция | Описание |
-|---------|----------|
-| `math::power(base, exp)` | Возведение в степень |
-| `math::abs_val(x)` | Модуль числа |
-| `math::max(a, b)` | Максимум |
-| `math::min(a, b)` | Минимум |
-| `math::clamp(val, lo, hi)` | Ограничение диапазона |
-| `math::is_even(x)` | Проверка на чётность |
 
 ### Системные вызовы
 
@@ -400,16 +401,11 @@ fn parse_config(raw: string) -> Result<Config, Error> {
 | `sys_write(fd, buf, count)` | Запись в файл |
 | `sys_getpid()` | Получение PID |
 | `sys_exit(code)` | Завершение процесса |
-| `sys_brk(addr)` | Изменение размера кучи |
-| `alloc(size)` | Выделение памяти |
-| `free(ptr)` | Освобождение памяти |
-| `read_input(buf, size)` | Чтение из stdin |
 
 ### Обработка ошибок
 
 | Функция | Описание |
 |---------|----------|
-| `error_new(code, msg)` | Создание ошибки |
 | `panic(msg)` | Аварийное завершение |
 | `assert(cond, msg)` | Проверка условия |
 
@@ -449,6 +445,9 @@ ELang/
 │   ├── errors.el        # Демонстрация обработки ошибок
 │   └── math.el          # Математическая библиотека
 ├── test/                 # Тестовые программы
+│   ├── hello.el          # Hello World + базовые фичи
+│   ├── arrays.el         # Тесты массивов
+│   └── new_syntax.el     # Тесты pipeline, when, defer, match
 ├── DESIGN.md             # Документация дизайна языка
 ├── elc                   # Скрипт компилятора
 └── Makefile
@@ -499,13 +498,15 @@ fn main() -> void {
         Ok(val) => val
         Err(e) => 0
     }
+    print_str("100 / 7 = ")
+    print_int(result)
+    print_str("\n")
 
     // Catch
     let safe = divide(10, 0) catch { 0 }
-
-    // Pipeline с обработкой ошибок
-    let value = divide(10, 2)
-        |> unwrap_or(0)
+    print_str("10 / 0 (catch) = ")
+    print_int(safe)
+    print_str("\n")
 }
 ```
 
@@ -531,11 +532,12 @@ make run      # Сборка и запуск теста
 
 ## Дорожная карта
 
-- [ ] Generics
-- [ ] Closures / lambdas
-- [ ] Arrays и slices
+- [x] **Arrays и срезы** — литералы `[1, 2, 3]`, доступ `arr[i]`, длина `arr.len`
 - [ ] Методы структур
 - [ ] Enum variants с данными
+- [ ] Slices (`arr[1..3]`)
+- [ ] Generics
+- [ ] Closures / lambdas
 - [ ] Traits / интерфейсы
 - [ ] Кросс-компиляция
 - [ ] Pass оптимизатора

@@ -25,6 +25,7 @@ const char *token_type_name(token_type_t t) {
         case TOKEN_COLON: return ":"; case TOKEN_COMMA: return ",";
         case TOKEN_LPAREN: return "("; case TOKEN_RPAREN: return ")";
         case TOKEN_LBRACE: return "{"; case TOKEN_RBRACE: return "}";
+        case TOKEN_LBRACKET: return "["; case TOKEN_RBRACKET: return "]";
         case TOKEN_SEMICOLON: return ";"; case TOKEN_DOT: return ".";
         case TOKEN_DOTDOT: return ".."; case TOKEN_FAT_ARROW: return "=>";
         case TOKEN_PIPE_ARROW: return "|>"; case TOKEN_WHEN: return "when";

@@ -70,6 +70,11 @@ static void print_ast(ast_node_t *n, int indent) {
             print_ast(n->as.when_expr.condition, indent+1); print_ast(n->as.when_expr.then_block, indent+1); break;
         case AST_TUPLE: printf("Tuple(%d)\n", n->as.tuple.count);
             for (int i = 0; i < n->as.tuple.count; i++) print_ast(n->as.tuple.elements[i], indent+1); break;
+        case AST_ARRAY_LITERAL: printf("ArrayLiteral(%d)\n", n->as.array_literal.count);
+            for (int i = 0; i < n->as.array_literal.count; i++) print_ast(n->as.array_literal.elements[i], indent+1); break;
+        case AST_INDEX: printf("Index\n");
+            print_ast(n->as.binary.left, indent+1); print_ast(n->as.binary.right, indent+1); break;
+        case AST_LEN_EXPR: printf("Len\n"); print_ast(n->as.len_expr.operand, indent+1); break;
         case AST_USING: printf("Using(\"%.*s\")\n", (int)n->as.using_decl.path_len, n->as.using_decl.path); break;
         case AST_PROGRAM: printf("Program(%d)\n", n->as.program.count);
             for (int i = 0; i < n->as.program.count; i++) print_ast(n->as.program.declarations[i], indent+1); break;

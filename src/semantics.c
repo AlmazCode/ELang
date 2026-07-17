@@ -372,6 +372,29 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
             return t; /* simplified: return first element type */
         }
 
+        case AST_ARRAY_LITERAL: {
+            /* [1, 2, 3] — infer type from first element, count from count */
+            if (node->as.array_literal.count == 0)
+                return type_new_array(type_new(TYPE_I64), 0);
+            type_info_t *elem_type = sem_infer_expr(ctx, node->as.array_literal.elements[0]);
+            return type_new_array(elem_type ? type_copy(elem_type) : type_new(TYPE_I64),
+                                  node->as.array_literal.count);
+        }
+
+        case AST_INDEX: {
+            /* arr[i] — return element type of the array */
+            type_info_t *arr_type = sem_infer_expr(ctx, node->as.binary.left);
+            if (arr_type && arr_type->kind == TYPE_ARRAY && arr_type->base)
+                return type_copy(arr_type->base);
+            return type_new(TYPE_UNKNOWN);
+        }
+
+        case AST_LEN_EXPR: {
+            /* arr.len — return i64 */
+            sem_infer_expr(ctx, node->as.len_expr.operand);
+            return type_new(TYPE_I64);
+        }
+
         case AST_BLOCK: {
             if (node->as.block.count == 0) return type_new(TYPE_VOID);
             return sem_infer_expr(ctx, node->as.block.stmts[node->as.block.count - 1]);
@@ -489,6 +512,11 @@ void sem_fold_constants(ast_node_t *node) {
             sem_fold_constants(node->as.assert_expr.message);
             break;
         case AST_DEFER: sem_fold_constants(node->as.defer_stmt.expr); break;
+        case AST_ARRAY_LITERAL:
+            for (int i = 0; i < node->as.array_literal.count; i++)
+                sem_fold_constants(node->as.array_literal.elements[i]);
+            break;
+        case AST_LEN_EXPR: sem_fold_constants(node->as.len_expr.operand); break;
         case AST_MATCH:
             sem_fold_constants(node->as.match_expr.value);
             for (int i = 0; i < node->as.match_expr.case_count; i++) {
