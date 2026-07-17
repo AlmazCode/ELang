@@ -1,0 +1,105 @@
+#!/bin/bash
+# ELang compiler wrapper — compile, assemble, link, run
+# Usage: elc <file.el>          — compile + run
+#        elc -c <file.el>       — compile only
+#        elc -r <file.el>       — run pre-compiled
+#        elc -check <file.el>   — type check only
+#        elc -o <out> <file.el> — custom output name
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ELC="$SCRIPT_DIR/bin/elc"
+LIB="$SCRIPT_DIR/lib/build/syscalls.o"
+
+if [ ! -f "$ELC" ]; then
+    echo "elc: compiler not found, building..."
+    make -C "$SCRIPT_DIR" -s
+fi
+
+usage() {
+    echo "ELang Compiler v0.3.0"
+    echo ""
+    echo "Usage:"
+    echo "  elc <file.el>            Compile and run"
+    echo "  elc -c <file.el>         Compile only (output: a.out)"
+    echo "  elc -o <out> <file.el>   Compile with custom output name"
+    echo "  elc -check <file.el>     Type check only"
+    echo "  elc -t <file.el>         Show tokens"
+    echo "  elc -a <file.el>         Show AST"
+    echo "  elc -run <file.el>       Run a .el file directly"
+    echo "  elc -h                   Show this help"
+}
+
+COMPILE_ONLY=0
+TYPE_CHECK=0
+OUTPUT=""
+INPUT=""
+
+# Parse args
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        -c) COMPILE_ONLY=1; shift ;;
+        -check) TYPE_CHECK=1; shift ;;
+        -o) OUTPUT="$2"; shift 2 ;;
+        -t|-a|-l) EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
+        -run) INPUT="$2"; shift 2; COMPILE_ONLY=0; break ;;
+        -*) echo "elc: unknown option '$1'"; usage; exit 1 ;;
+        *) INPUT="$1"; shift ;;
+    esac
+done
+
+if [ -z "$INPUT" ]; then
+    usage
+    exit 1
+fi
+
+if [ ! -f "$INPUT" ]; then
+    echo "elc: file not found: $INPUT"
+    exit 1
+fi
+
+# Type check
+if [ "$TYPE_CHECK" -eq 1 ]; then
+    "$ELC" -check "$INPUT"
+    exit $?
+fi
+
+# Generate output name
+if [ -z "$OUTPUT" ]; then
+    BASENAME=$(basename "$INPUT" .el)
+    OUTPUT="/tmp/elang_${BASENAME}_$$"
+    CLEANUP=1
+else
+    # strip .el extension if present
+    OUTPUT="${OUTPUT%.el}"
+    CLEANUP=0
+fi
+ASM="${OUTPUT}.asm"
+OBJ="${OUTPUT}.o"
+BIN="${OUTPUT}.out"
+
+# Compile
+"$ELC" -o "$ASM" $EXTRA_ARGS "$INPUT"
+
+# Assemble
+nasm -f elf64 "$ASM" -o "$OBJ" 2>/dev/null
+
+# Link
+ld "$OBJ" "$LIB" -o "$BIN" 2>/dev/null
+
+echo "elc: $INPUT -> $BIN"
+
+# Run unless compile-only
+if [ "$COMPILE_ONLY" -eq 0 ]; then
+    "$BIN"
+    EXIT_CODE=$?
+    # Cleanup temp files
+    if [ "$CLEANUP" -eq 1 ]; then
+        rm -f "$ASM" "$OBJ" "$BIN"
+    fi
+    exit $EXIT_CODE
+else
+    echo "elc: output: $BIN"
+fi

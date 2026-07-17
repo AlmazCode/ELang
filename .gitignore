@@ -1,0 +1,21 @@
+# Build artifacts
+*.o
+*.asm
+bin/
+lib/build/
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ELang compiled binaries
+*.out
+output.asm
+.mimocode/
