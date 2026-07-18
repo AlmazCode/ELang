@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "semantics.h"
+#include "codegen.h"  /* for MAX_IDENT_LEN */
 
 /* ===== External Function Handling ===== */
 /* The compiler doesn't know about library functions.
@@ -126,13 +127,13 @@ const char *type_name_buf(type_info_t *t, char *buf, size_t size) {
         case TYPE_F64: snprintf(buf, size, "f64"); return buf;
         case TYPE_STRING: snprintf(buf, size, "string"); return buf;
         case TYPE_POINTER: {
-            char tmp[64];
+            char tmp[MAX_IDENT_LEN];
             type_name_buf(t->base, tmp, sizeof(tmp));
             snprintf(buf, size, "*%s", tmp);
             return buf;
         }
         case TYPE_ARRAY: {
-            char tmp[64];
+            char tmp[MAX_IDENT_LEN];
             type_name_buf(t->base, tmp, sizeof(tmp));
             if (t->array_len >= 0)
                 snprintf(buf, size, "[%s; %d]", tmp, t->array_len);
@@ -177,11 +178,14 @@ const char *type_name(type_info_t *t) {
         case TYPE_ERR_RESULT: return "Err";
         default: break;
     }
-    /* for pointer/array types, use rotating static buffers */
+    /* for pointer/array types, use rotating static buffers
+     * WARNING: if a single printf/fprintf call uses more type_name() results
+     * than the number of buffers below, earlier results will be overwritten.
+     * Max safe usage per call: 8 concurrent type_name() results. */
     {
-        static char bufs[4][128];
+        static char bufs[8][128];
         static int idx = 0;
-        char *buf = bufs[idx++ & 3];
+        char *buf = bufs[idx++ & 7];
         type_name_buf(t, buf, sizeof(bufs[0]));
         return buf;
     }
@@ -276,7 +280,7 @@ type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
     switch (type_node->type) {
         case AST_IDENT: {
             /* resolve type name to type */
-            char name[64];
+            char name[MAX_IDENT_LEN];
             snprintf(name, sizeof(name), "%.*s", (int)type_node->as.ident.name_len, type_node->as.ident.name);
             /* check built-in type names */
             if (strcmp(name, "void") == 0) return type_new(TYPE_VOID);
@@ -330,7 +334,7 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
         case AST_STRING_LIT: return type_new(TYPE_STRING);
 
         case AST_IDENT: {
-            char name[64];
+            char name[MAX_IDENT_LEN];
             snprintf(name, sizeof(name), "%.*s", (int)node->as.ident.name_len, node->as.ident.name);
             symbol_t *sym = scope_find(ctx->current_scope, name);
             if (sym) return sym->type;
@@ -364,7 +368,7 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
         case AST_CALL: {
             /* look up function type */
             if (node->as.call.callee->type == AST_IDENT) {
-                char name[64];
+                char name[MAX_IDENT_LEN];
                 snprintf(name, sizeof(name), "%.*s",
                     (int)node->as.call.callee->as.ident.name_len,
                     node->as.call.callee->as.ident.name);
@@ -664,7 +668,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             type_info_t *val_type = sem_infer_expr(ctx, node->as.assign.value);
             sem_fold_constants(node->as.assign.value);
             if (node->as.assign.target->type == AST_IDENT) {
-                char name[64];
+                char name[MAX_IDENT_LEN];
                 snprintf(name, sizeof(name), "%.*s",
                     (int)node->as.assign.target->as.ident.name_len,
                     node->as.assign.target->as.ident.name);
@@ -759,7 +763,9 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             {
                 scope_t *old = ctx->current_scope;
                 ctx->current_scope = scope_new(old);
-                scope_add(ctx->current_scope, node->as.for_stmt.var, type_new(TYPE_I64), 1);
+                scope_add(ctx->current_scope, node->as.for_stmt.vars[0], type_new(TYPE_I64), 1);
+                if (node->as.for_stmt.var_count > 1)
+                    scope_add(ctx->current_scope, node->as.for_stmt.vars[1], type_new(TYPE_UNKNOWN), 1);
                 sem_block(ctx, node->as.for_stmt.body);
                 scope_t *tmp = ctx->current_scope;
                 ctx->current_scope = old;

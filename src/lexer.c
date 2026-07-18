@@ -67,19 +67,50 @@ token_t lexer_next_token(lexer_t *l) {
         advance(l);
         size_t sp = l->pos;
         while (l->current != '"' && l->current != '\0') {
-            if (l->current == '\\') advance(l);
+            if (l->current == '\\') {
+                advance(l);
+                switch (l->current) {
+                    case 'n': case 't': case 'r': case '0':
+                    case '\\': case '"': case '\'':
+                        break;
+                    default:
+                        fprintf(stderr, "Lexer warning at %d:%d: unknown escape '\\%c'\n",
+                                l->line, l->col, l->current);
+                }
+            }
             advance(l);
         }
         size_t len = l->pos - sp;
-        if (l->current == '"') advance(l);
+        if (l->current != '"') {
+            fprintf(stderr, "Lexer error at %d:%d: unterminated string literal\n", line, col);
+            return token_create(TOKEN_ERROR, &l->source[sp], len, line, col);
+        }
+        advance(l);
         return token_create(TOKEN_STRING_LIT, &l->source[sp], len, line, col);
     }
     if (l->current == '\'') {
         advance(l);
         size_t sp = l->pos;
-        while (l->current != '\'' && l->current != '\0') { if (l->current == '\\') advance(l); advance(l); }
+        while (l->current != '\'' && l->current != '\0') {
+            if (l->current == '\\') {
+                advance(l);
+                switch (l->current) {
+                    case 'n': case 't': case 'r': case '0':
+                    case '\\': case '"': case '\'':
+                        break;
+                    default:
+                        fprintf(stderr, "Lexer warning at %d:%d: unknown escape '\\%c'\n",
+                                l->line, l->col, l->current);
+                }
+            }
+            advance(l);
+        }
         size_t len = l->pos - sp;
-        if (l->current == '\'') advance(l);
+        if (l->current != '\'') {
+            fprintf(stderr, "Lexer error at %d:%d: unterminated character literal\n", line, col);
+            return token_create(TOKEN_ERROR, &l->source[sp], len, line, col);
+        }
+        advance(l);
         return token_create(TOKEN_CHAR_LIT, &l->source[sp], len, line, col);
     }
     if (isalpha(l->current) || l->current == '_') {

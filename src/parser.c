@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "parser.h"
+#include "codegen.h"  /* for MAX_IDENT_LEN, MAX_PARSE_DEPTH */
+
+#define ELANG_MAX_PARSE_DEPTH 2000
 
 static void advance(parser_t *p) { p->current = p->peek; p->peek = lexer_next_token(&p->lexer); }
 static int match(parser_t *p, token_type_t t) { if (p->current.type == t) { advance(p); return 1; } return 0; }
@@ -174,12 +177,60 @@ static ast_node_t *parse_primary(parser_t *p) {
             expect(p, TOKEN_COMMA);
             n->as.assert_expr.message = parse_expr(p);
             expect(p, TOKEN_RPAREN); return n; }
+        case TOKEN_FN: {
+            /* fn x => expr  or  fn(x) => expr — closure expression */
+            advance(p); /* consume 'fn' */
+            ast_node_t *n = ast_new(AST_CLOSURE, t.line, t.col);
+            n->as.closure.params = NULL;
+            n->as.closure.param_lens = NULL;
+            n->as.closure.param_count = 0;
+            n->as.closure.captures = NULL;
+            n->as.closure.capture_lens = NULL;
+            n->as.closure.capture_count = 0;
+            /* parse parameters: fn x => ... or fn(x) => ... */
+            if (p->current.type == TOKEN_LPAREN) {
+                advance(p); /* skip ( */
+                while (p->current.type != TOKEN_RPAREN && p->current.type != TOKEN_EOF) {
+                    if (n->as.closure.param_count > 0) expect(p, TOKEN_COMMA);
+                    n->as.closure.param_count++;
+                    n->as.closure.params = realloc(n->as.closure.params, sizeof(char*) * n->as.closure.param_count);
+                    n->as.closure.param_lens = realloc(n->as.closure.param_lens, sizeof(size_t) * n->as.closure.param_count);
+                    n->as.closure.params[n->as.closure.param_count - 1] = tok_str(&p->current);
+                    n->as.closure.param_lens[n->as.closure.param_count - 1] = p->current.length;
+                    advance(p);
+                }
+                expect(p, TOKEN_RPAREN);
+            } else {
+                /* single param without parens: fn x => ... */
+                n->as.closure.param_count = 1;
+                n->as.closure.params = malloc(sizeof(char*));
+                n->as.closure.param_lens = malloc(sizeof(size_t));
+                n->as.closure.params[0] = tok_str(&p->current);
+                n->as.closure.param_lens[0] = p->current.length;
+                advance(p);
+            }
+            expect(p, TOKEN_FAT_ARROW);
+            skip_nl(p);
+            n->as.closure.body = parse_expr(p);
+            return n; }
+        case TOKEN_ERROR:
+            fprintf(stderr, "Parse error at %d:%d: invalid token\n", t.line, t.col);
+            p->has_error = 1;
+            advance(p); return NULL;
         default: fprintf(stderr, "Parse error at %d:%d: unexpected %s\n", t.line, t.col, token_type_name(t.type));
+            p->has_error = 1;
             advance(p); return NULL;
     }
 }
 
 static ast_node_t *parse_binary(parser_t *p, int min_prec) {
+    if (++p->depth > ELANG_MAX_PARSE_DEPTH) {
+        fprintf(stderr, "Parse error at %d:%d: expression nested too deeply\n",
+                p->current.line, p->current.col);
+        p->has_error = 1;
+        p->depth--;
+        return NULL;
+    }
     ast_node_t *left = parse_primary(p);
     /* handle postfix index access: expr[expr] */
     while (left && p->current.type == TOKEN_LBRACKET) {
@@ -213,14 +264,15 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
             case TOKEN_PLUS: case TOKEN_MINUS: prec=5; break;
             case TOKEN_STAR: case TOKEN_SLASH: case TOKEN_PERCENT: prec=6; break;
             case TOKEN_COLONCOLON: prec=7; break;
-            default: return left;
+            default: p->depth--; return left;
         }
-        if (prec < min_prec) return left;
+        if (prec < min_prec) { p->depth--; return left; }
         advance(p);
         ast_node_t *right = parse_binary(p, prec + 1);
         if (op == TOKEN_DOTDOT) {
             ast_node_t *n = ast_new(AST_RANGE, op, 0);
             n->as.range.left = left; n->as.range.right = right;
+            p->depth--;
             return n;
         }
         if (op == TOKEN_PIPE_ARROW) {
@@ -302,8 +354,33 @@ static ast_node_t *parse_while(parser_t *p) {
 
 static ast_node_t *parse_for(parser_t *p) {
     ast_node_t *n = ast_new(AST_FOR, p->current.line, p->current.col);
-    advance(p); n->as.for_stmt.var = tok_str(&p->current); n->as.for_stmt.var_len = p->current.length;
-    advance(p); expect(p, TOKEN_IN);
+    advance(p); /* consume 'for' keyword */
+
+    /* parse variable names: "x" or "i, x" */
+    n->as.for_stmt.vars = NULL;
+    n->as.for_stmt.var_lens = NULL;
+    n->as.for_stmt.var_count = 0;
+
+    /* parse first variable */
+    n->as.for_stmt.var_count = 1;
+    n->as.for_stmt.vars = malloc(sizeof(char*));
+    n->as.for_stmt.var_lens = malloc(sizeof(size_t));
+    n->as.for_stmt.vars[0] = tok_str(&p->current);
+    n->as.for_stmt.var_lens[0] = p->current.length;
+    advance(p);
+
+    /* optional second variable for enumerate: for i, x in arr */
+    if (p->current.type == TOKEN_COMMA) {
+        advance(p);
+        n->as.for_stmt.var_count = 2;
+        n->as.for_stmt.vars = realloc(n->as.for_stmt.vars, sizeof(char*) * 2);
+        n->as.for_stmt.var_lens = realloc(n->as.for_stmt.var_lens, sizeof(size_t) * 2);
+        n->as.for_stmt.vars[1] = tok_str(&p->current);
+        n->as.for_stmt.var_lens[1] = p->current.length;
+        advance(p);
+    }
+
+    if (!expect(p, TOKEN_IN)) return n;
     n->as.for_stmt.iterable = parse_expr(p);
     skip_nl(p);
     /* support => for single-expression for bodies */
@@ -403,7 +480,7 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
         /* implicit return: if last stmt is an expression and return type is not void, wrap in return */
         int is_void = 0;
         if (n->as.fn_decl.return_type && n->as.fn_decl.return_type->type == AST_IDENT) {
-            char rname[32];
+            char rname[MAX_IDENT_LEN];
             snprintf(rname, sizeof(rname), "%.*s",
                 (int)n->as.fn_decl.return_type->as.ident.name_len,
                 n->as.fn_decl.return_type->as.ident.name);
@@ -524,7 +601,7 @@ static ast_node_t *parse_stmt(parser_t *p) {
 
 void parser_init(parser_t *p, const char *source) {
     lexer_init(&p->lexer, source); p->current = lexer_next_token(&p->lexer); p->peek = lexer_next_token(&p->lexer);
-    p->has_error = 0;
+    p->has_error = 0; p->depth = 0;
 }
 
 ast_node_t *parser_parse(parser_t *p) {

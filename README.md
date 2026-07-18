@@ -1,6 +1,8 @@
-# ELang — Язык программирования нового поколения
+# ELang v0.42.0 — Язык программирования нового поколения
 
 **Быстрый, статически типизированный, компилируемый системный язык программирования с expression-oriented синтаксисом и pipeline-first подходом.**
+
+Автор: **AlmazCode**
 
 ELang компилируется напрямую в x86_64 ассемблер, создавая нативные Linux бинарники с нулевым runtime overhead. Он сочетает производительность C с современными возможностями языков: pattern matching, pipeline операторы, система модулей и обработка ошибок.
 
@@ -31,16 +33,17 @@ ld output.o lib/build/core.o -o output
 | **Статическая типизация** | Типы проверяются во время компиляции, вывод типов |
 | **Expression-oriented** | `if`, `match` возвращают значения |
 | **Pipeline оператор `\|>`** | Цепочки вызовов функций: `x \|> f() \|> g()` |
+| **Closures** | Анонимные функции: `fn x => x * 2`, передача в map/filter/reduce |
 | **Result\<T, E\>** | Типобезопасная обработка ошибок |
 | **Система модулей** | `using "math"`, `math::add()`, `export fn` |
 | **Pattern matching** | `match` с `Ok`/`Err` для обработки ошибок |
 | **Обработка ошибок** | `?` operator, `catch` блоки, `panic`, `assert` |
 | **`defer`** | Автоматическая очистка ресурсов при выходе из scope |
-| **Массивы** | Литералы `[1, 2, 3]`, доступ `arr[i]`, длина `arr.len` |
+| **Массивы** | Heap-allocated `[1, 2, 3]`, bounds checking, `arr[i]`, `arr.len`, `map`, `filter`, `reduce` |
+| **for-in + enumerate** | `for x in arr`, `for i, x in arr` |
 | **Constant folding** | Вычисление константных выражений во время компиляции |
-| **Нулевой runtime** | Нет сборщика мусора, нет VM, нет скрытых аллокаций |
-| **Стандартная библиотека** | Core (auto) + std (using) — print, str, sys, assert |
-| **Линковщик резолвит символы** | Компилятор не знает о библиотеках, линковщик находит функции |
+| **Нулевой runtime** | Нет сборщика мусора, нет VM, нет скрытых аллокаций (bump allocator) |
+| **Стандартная библиотека** | Core (auto) + std (using) — print, str, sys, assert, map, filter, reduce |
 
 ---
 
@@ -215,12 +218,26 @@ while i < 10 {
 }
 ```
 
-#### for (диапазон)
+#### for (диапазон и массивы)
 
 ```elang
 // Цикл от 0 до 9
 for i in 0..10 {
     print_int(i)
+}
+
+// По элементам массива
+for x in arr {
+    print_int(x)
+    print_str(" ")
+}
+
+// С индексом (enumerate)
+for i, x in arr {
+    print_int(i)
+    print_str(": ")
+    print_int(x)
+    print_str("\n")
 }
 
 // Однострочное тело
@@ -355,10 +372,10 @@ print_str("5. End\n")
 #### Создание и доступ
 
 ```elang
-// Создание массива
+// Создание массива (heap-allocated)
 let arr = [10, 20, 30, 40, 50]
 
-// Доступ по индексу (с 0)
+// Доступ по индексу (с 0, bounds-checked)
 let first = arr[0]   // 10
 let third = arr[2]   // 30
 let last = arr[4]    // 50
@@ -377,24 +394,57 @@ let arr2 = [x, x + 1, x * 2]  // [5, 6, 10]
 #### Обход массива
 
 ```elang
-// Через while
+// for-in (по элементам)
+for x in arr {
+    print_int(x)
+    print_str(" ")
+}
+
+// for-in с индексом (enumerate)
+for i, x in arr {
+    print_int(i)
+    print_str(": ")
+    print_int(x)
+    print_str("\n")
+}
+
+// for-range (по индексам)
+for i in 0..arr.len {
+    print_int(arr[i])
+}
+
+// while
 let mut sum = 0
 let mut i = 0
 while i < arr.len {
     sum = sum + arr[i]
     i = i + 1
 }
-
-// Через for
-for i in 0..arr.len {
-    print_int(arr[i])
-}
 ```
 
-**Ограничения v1:**
-- Максимум 32 элемента (стековый фрейм)
-- Все элементы одного типа (выводится из первого элемента)
-- Элементы хранятся как `i64` (8 байт каждый)
+#### Pipeline операции с массивами
+
+```elang
+// map — применить функцию к каждому элементу
+let doubled = arr |> map(fn x => x * 2)       // [20, 40, 60]
+let named = arr |> map(double)                  // с именованной функцией
+
+// filter — оставить элементы по условию
+let big = arr |> filter(fn x => x > 20)        // [30, 40, 50]
+
+// reduce — свернуть в одно значение
+let sum = arr |> reduce(0, fn acc, x => acc + x)  // 150
+
+// цепочки
+let result = arr |> map(fn x => x * 2) |> filter(fn x => x > 30)
+```
+
+**Возможности v2:**
+- Heap-allocated (переживают return из функции)
+- Bounds checking с panic при выходе за границы
+- `map`, `filter`, `reduce` через pipeline
+- `for-in` и `for i, x in` (enumerate)
+- Closure-совместимый calling convention
 
 ### Pipeline оператор `|>`
 
@@ -702,20 +752,43 @@ make run      # Сборка и запуск теста
 
 ## Дорожная карта
 
-- [x] **Arrays** — литералы `[1, 2, 3]`, доступ `arr[i]`, длина `arr.len`
-- [x] **Result\<T, E\>** — типобезопасная обработка ошибок
+### Завершено
+
+- [x] **Arrays** — heap-allocated, bounds checking, `arr[i]`, `arr.len`
 - [x] **Pipeline `|>`** — цепочки вызовов функций
+- [x] **Closures** — `fn x => expr`, передача в map/filter/reduce
+- [x] **map/filter/reduce** — pipeline-операции с массивами
+- [x] **for-in + enumerate** — `for x in arr`, `for i, x in arr`
+- [x] **Result\<T, E\>** — типобезопасная обработка ошибок
 - [x] **Expression-oriented `if`** — `if` возвращает значение
-- [ ] Методы структур
-- [ ] Enum variants с данными
-- [ ] Slices (`arr[1..3]`)
-- [ ] Generics
-- [ ] Closures / lambdas
-- [ ] Traits / интерфейсы
-- [ ] Кросс-компиляция
-- [ ] Pass оптимизатора
-- [ ] Async/await
-- [ ] Pattern matching с guard'ами
+- [x] **Closure calling convention** — все функции используют统一 calling convention
+
+### Дорожная карта (ближайшее)
+
+- [ ] **Closures: captures** — захват переменных из outer scope (environment struct)
+- [ ] **Watermark allocator** — автоматическая очистка памяти при выходе из функции
+- [ ] **Struct methods** — вызов методов через `obj.method()`
+- [ ] **Enum variants с данными** — `enum Result { Ok(i64), Err(i64) }`
+- [ ] **Slices** — `arr[1..3]` как view без копирования
+- [ ] **for i in arr** — индекс + значение через встроенный enumerate
+
+### Среднесрочные планы
+
+- [ ] **Register allocator** — вместо хардкода регистров
+- [ ] **Type-aware codegen** — массивы знают свой тип, не просто `i64*`
+- [ ] **Closure environment struct** — захват переменных через heap-allocated env
+- [ ] **Error recovery** — вместо `exit(1)` в codegen
+- [ ] **Named arguments** — `connect(host: "x", port: 8080)`
+- [ ] **Pattern matching с guard'ами** — `x if x > 0 => ...`
+
+### Долгосрочные планы
+
+- [ ] **Generics** — параметризованные типы
+- [ ] **Traits / интерфейсы** — полиморфизм
+- [ ] **Кросс-компиляция** — другие target architectures
+- [ ] **Pass оптимизатора** — peephole, constant propagation
+- [ ] **Async/await** — асинхронное программирование
+- [ ] **Struct methods** — `obj.method()` с авто-передачей self
 
 ---
 

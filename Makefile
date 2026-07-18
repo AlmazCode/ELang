@@ -26,8 +26,9 @@ test: $(BIN)
 	./bin/elc -o test/arrays.asm test/arrays.el
 	nasm -f elf64 test/hello.asm -o test/hello.o
 	nasm -f elf64 test/arrays.asm -o test/arrays.o
-	ld test/hello.o lib/build/syscalls.o -o test/hello
-	ld test/arrays.o lib/build/syscalls.o -o test/arrays
+	nasm -f elf64 lib/core.asm -o lib/build/core.o
+	ld test/hello.o lib/build/core.o -o test/hello
+	ld test/arrays.o lib/build/core.o -o test/arrays
 	./test/hello
 	./test/arrays
 

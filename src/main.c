@@ -8,7 +8,7 @@
 #include "ast.h"
 #include "semantics.h"
 
-#define VERSION "0.1.0"
+#define VERSION "0.42.0"
 
 static void usage(const char *p) {
     printf("ELang Compiler v%s\n", VERSION);
@@ -72,7 +72,12 @@ static void print_ast(ast_node_t *n, int indent) {
             print_ast(n->as.while_stmt.body, indent+1);
             break;
         case AST_FOR:
-            printf("For(%.*s)\n", (int)n->as.for_stmt.var_len, n->as.for_stmt.var);
+            printf("For(");
+            for (int fi = 0; fi < n->as.for_stmt.var_count; fi++) {
+                if (fi > 0) printf(", ");
+                printf("%.*s", (int)n->as.for_stmt.var_lens[fi], n->as.for_stmt.vars[fi]);
+            }
+            printf(")\n");
             print_ast(n->as.for_stmt.body, indent+1);
             break;
         case AST_BLOCK:
@@ -145,7 +150,7 @@ static ast_node_t *parse_file(const char *path) {
     if (!src) return NULL;
     parser_t p; parser_init(&p, src);
     ast_node_t *ast = parser_parse(&p);
-    if (!ast) { fprintf(stderr, "Parse error in %s\n", path); free(src); return NULL; }
+    if (!ast || p.has_error) { fprintf(stderr, "Parse error in %s\n", path); free(src); return NULL; }
     /* source is no longer needed — AST has copied all string values */
     free(src);
     return ast;
@@ -283,7 +288,7 @@ int main(int argc, char **argv) {
     if (show_tokens) { print_tokens(src); free(src); return 0; }
     parser_t p; parser_init(&p, src);
     ast_node_t *ast = parser_parse(&p);
-    if (!ast) { fprintf(stderr, "Parse error\n"); free(src); return 1; }
+    if (!ast || p.has_error) { fprintf(stderr, "Parse error\n"); ast_free(ast); free(src); return 1; }
     if (show_ast) { print_ast(ast, 0); ast_free(ast); free(src); return 0; }
 
     /* Resolve module imports */
@@ -314,7 +319,7 @@ int main(int argc, char **argv) {
 
     FILE *out = fopen(output, "w");
     if (!out) { fprintf(stderr, "Cannot open '%s'\n", output); ast_free(ast); free(src); return 1; }
-    codegen_t cg; codegen_init(&cg, out); cg.is_main = !is_lib;
+    codegen_t cg; codegen_init(&cg, out); cg.is_main = !is_lib; cg.source_file = input;
     codegen_program(&cg, ast); codegen_free(&cg); fclose(out);
     printf("elc: %s -> %s (%d decls)\n", input, output, ast->as.program.count);
     ast_free(ast); free(src); return 0;

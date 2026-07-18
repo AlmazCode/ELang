@@ -1,10 +1,12 @@
-# ELang Syntax Design
+# ELang v0.42.0 Syntax Design
 
 ## Identity: "Systems programming that reads like data flow"
 
 ELang is not "C with features." It's a language where code reads as a sequence of
 transformations. Data flows through pipes. Results propagate automatically.
 The compiler does the boring work so you don't have to.
+
+Автор: **AlmazCode**
 
 Three pillars:
 1. **Expression-oriented** — everything returns a value
@@ -171,14 +173,14 @@ io::print("hello")
 
 ## Feature 8: Arrays
 
-Stack-allocated fixed-size arrays with literal syntax, indexing, and `.len`.
+Heap-allocated arrays with literal syntax, indexing, bounds checking, and pipeline operations.
 
 ```elang
 fn main() -> void {
-    // Array literal — type inferred from elements
+    // Array literal — heap-allocated
     let arr = [10, 20, 30, 40, 50]
 
-    // Index access (0-based)
+    // Index access (0-based, bounds-checked)
     let first = arr[0]   // 10
     let third = arr[2]   // 30
 
@@ -193,6 +195,18 @@ fn main() -> void {
         i = i + 1
     }
 
+    // for-in (iterate elements)
+    for x in arr {
+        print_int(x)
+    }
+
+    // for-in with index (enumerate)
+    for i, x in arr {
+        print_int(i)
+        print_str(": ")
+        print_int(x)
+    }
+
     // Array with expressions
     let x = 5
     let arr2 = [x, x + 1, x * 2]  // [5, 6, 10]
@@ -201,24 +215,40 @@ fn main() -> void {
 
 ### Storage Model
 
-Arrays are stack-allocated. The layout in memory:
+Arrays are **heap-allocated** via bump allocator (`brk` syscall). The layout in memory:
 
 ```
-[rsp]      → length (i64)
-[rsp+8]    → element[0]
-[rsp+16]   → element[1]
+[ptr - 24] = refcount (i64)     // reference counting
+[ptr - 16] = capacity (i64)     // allocated slots
+[ptr - 8]  = length (i64)       // current element count
+[ptr + 0]  = element[0]
+[ptr + 8]  = element[1]
 ...
-[rsp+8+N*8] → element[N-1]
+[ptr + N*8] = element[N-1]
 ```
 
-The array variable holds a pointer to `element[0]` (i.e., `rsp+8`). `.len` reads from `[pointer-8]`.
+The array variable holds a pointer to `element[0]` (i.e., `ptr`). `.len` reads from `[ptr-8]`.
 
-### Limitations (v1)
+### Pipeline Operations
 
-- Maximum 32 elements (256 bytes on stack)
-- All elements must be the same type (inferred from first element)
-- Elements stored as `i64` (8 bytes each)
-- No slices, no heap allocation (planned for future)
+```elang
+arr |> map(fn x => x * 2)              // map with closure
+arr |> map(double)                      // map with named function
+arr |> filter(fn x => x > 10)          // filter
+arr |> reduce(0, fn acc, x => acc + x) // reduce
+arr |> map(fn x => x * 2) |> filter(fn x => x > 30)  // chains
+```
+
+### Calling Convention
+
+All user-defined functions use **closure convention**: `rdi=env_ptr`, `rsi=arg0`, `rdx=arg1`, ... This allows transparent passing of functions to `map`/`filter`/`reduce` without wrapping.
+
+### Limitations
+
+- No captures in closures (env_ptr is always NULL)
+- No `push`/`pop`/`append` on existing arrays (immutable data)
+- No slices (`arr[1..3]` returns copy, not view)
+- `array_free` is no-op (bump allocator)
 
 ---
 
@@ -374,18 +404,21 @@ let value = risky_operation() catch {
 
 | Feature | Complexity | Impact | Status |
 |---------|-----------|--------|--------|
-| Implicit return | Low | High — less boilerplate everywhere | Done |
-| `\|>` pipeline | Medium | High — defines the language's identity | Done |
-| Expression-oriented `if` | Low | Medium — cleaner than if-as-expression | Done |
-| `defer` | Medium | High — essential for systems programming | Done |
-| Optional braces (`=>`) | Low | Medium — cleaner single-line functions | Done |
-| Tuple unpacking | Medium | Medium — multiple returns become natural | Done |
-| `using` imports | Low | Low — nice to have | Done |
-| **Arrays** | **Medium** | **High — enables practical programs** | **Done** |
-| **Result\<T, E\>** | **Medium** | **High — type-safe error handling** | **Done** |
-| Struct methods | Medium | High — OOP-style organization | Planned |
-| Enum variants with data | Medium | High — algebraic data types | Planned |
-| Error handling (`?`, `catch`) | Medium | High — ergonomic error propagation | Done |
-| Named arguments | Medium | Low — quality of life | Planned |
-
-Start with implicit return + pipeline + expression-oriented if. Those three define ELang's character.
+| Implicit return | Low | High | Done |
+| `\|>` pipeline | Medium | High | Done |
+| Expression-oriented `if` | Low | Medium | Done |
+| `defer` | Medium | High | Done |
+| Optional braces (`=>`) | Low | Medium | Done |
+| Tuple unpacking | Medium | Medium | Done |
+| `using` imports | Low | Low | Done |
+| **Arrays (heap)** | **High** | **High** | **Done** |
+| **Result\<T, E\>** | **Medium** | **High** | **Done** |
+| **Closures** | **High** | **High** | **Done** |
+| **map/filter/reduce** | **Medium** | **High** | **Done** |
+| **for-in + enumerate** | **Medium** | **Medium** | **Done** |
+| Closures: captures | High | High | Planned |
+| Struct methods | Medium | High | Planned |
+| Enum variants with data | Medium | High | Planned |
+| Named arguments | Medium | Low | Planned |
+| Generics | High | High | Planned |
+| Traits | High | High | Planned |

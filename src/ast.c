@@ -38,7 +38,9 @@ void free_node(ast_node_t *n) {
         case AST_IF: free_node(n->as.if_stmt.condition); free_node(n->as.if_stmt.then_block);
             free_node(n->as.if_stmt.else_block); break;
         case AST_WHILE: free_node(n->as.while_stmt.condition); free_node(n->as.while_stmt.body); break;
-        case AST_FOR: free(n->as.for_stmt.var); free_node(n->as.for_stmt.iterable);
+        case AST_FOR: for (int fi = 0; fi < n->as.for_stmt.var_count; fi++) free(n->as.for_stmt.vars[fi]);
+            free(n->as.for_stmt.vars); free(n->as.for_stmt.var_lens);
+            free_node(n->as.for_stmt.iterable);
             free_node(n->as.for_stmt.body); break;
         case AST_BLOCK: for (int i = 0; i < n->as.block.count; i++) free_node(n->as.block.stmts[i]);
             free(n->as.block.stmts); break;
@@ -69,6 +71,11 @@ void free_node(ast_node_t *n) {
         case AST_OK_EXPR: free_node(n->as.ok_expr.value); break;
         case AST_ERR_EXPR: free_node(n->as.err_expr.value); break;
         case AST_RESULT_TYPE: free_node(n->as.result_type.ok_type); free_node(n->as.result_type.err_type); break;
+        case AST_CLOSURE: for (int ci = 0; ci < n->as.closure.param_count; ci++) free(n->as.closure.params[ci]);
+            free(n->as.closure.params); free(n->as.closure.param_lens);
+            free_node(n->as.closure.body);
+            for (int ci = 0; ci < n->as.closure.capture_count; ci++) free(n->as.closure.captures[ci]);
+            free(n->as.closure.captures); free(n->as.closure.capture_lens); break;
         case AST_PROGRAM: for (int i = 0; i < n->as.program.count; i++) free_node(n->as.program.declarations[i]);
             free(n->as.program.declarations); break;
         default: break;
