@@ -18,6 +18,7 @@ typedef enum {
     AST_USING, AST_PROGRAM,
     AST_TRY_EXPR, AST_CATCH_EXPR, AST_PANIC_EXPR, AST_ASSERT_EXPR,
     AST_ARRAY_LITERAL, AST_LEN_EXPR,
+    AST_RESULT_TYPE,
 } ast_type_t;
 
 typedef struct ast_node ast_node_t;
@@ -76,6 +77,7 @@ struct ast_node {
         struct { ast_node_t *condition, *message; } assert_expr; /* assert(cond, msg) */
         struct { ast_node_t **elements; int count; } array_literal;  /* [1, 2, 3] */
         struct { ast_node_t *operand; } len_expr;                    /* arr.len */
+        struct { ast_node_t *ok_type; ast_node_t *err_type; } result_type; /* Result<T, E> */
     } as;
 };
 

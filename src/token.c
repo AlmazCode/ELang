@@ -16,7 +16,7 @@ const char *token_type_name(token_type_t t) {
         case TOKEN_STRUCT: return "struct"; case TOKEN_ENUM: return "enum";
         case TOKEN_IMPORT: return "import"; case TOKEN_EXPORT: return "export";
         case TOKEN_TRUE: return "true"; case TOKEN_FALSE: return "false";
-        case TOKEN_OK: return "Ok"; case TOKEN_ERR: return "Err";
+        case TOKEN_OK: return "Ok"; case TOKEN_ERR: return "Err"; case TOKEN_RESULT: return "Result";
         case TOKEN_PLUS: return "+"; case TOKEN_MINUS: return "-";
         case TOKEN_STAR: return "*"; case TOKEN_SLASH: return "/";
         case TOKEN_EQ: return "=="; case TOKEN_NEQ: return "!=";

@@ -1,4 +1,5 @@
-; ELang Standard Library
+; ELang Core Library
+; Always linked, no import required
 section .text
 
 ; print_str(const char *str)
@@ -28,6 +29,20 @@ print_int:
     mov rbp, rsp
     sub rsp, 32
     mov rax, rdi
+    ; handle negative numbers
+    test rax, rax
+    jns .positive
+    ; print '-' and negate
+    push rax
+    mov byte [rsp-1], '-'
+    lea rsi, [rsp-1]
+    mov rdx, 1
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    pop rax
+    neg rax
+.positive:
     lea rsi, [rbp-1]
     mov byte [rsi], 0
     mov rcx, 10
@@ -62,6 +77,12 @@ print_hex:
     lea rsi, [rbp-1]
     mov byte [rsi], 0
     mov rcx, 16
+    test rax, rax
+    jnz .hp
+    ; handle zero: insert '0' character
+    dec rsi
+    mov byte [rsi], '0'
+    jmp .hpr
 .hp: test rax, rax
     jz .hpr
     xor rdx, rdx

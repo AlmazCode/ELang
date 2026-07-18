@@ -19,8 +19,6 @@ void free_node(ast_node_t *n) {
         case AST_RANGE: free_node(n->as.range.left); free_node(n->as.range.right); break;
         case AST_PIPE: free_node(n->as.pipe.left); free_node(n->as.pipe.right); break;
         case AST_DEFER: free_node(n->as.defer_stmt.expr); break;
-        case AST_WHEN: free_node(n->as.when_expr.condition); free_node(n->as.when_expr.then_block);
-            free_node(n->as.when_expr.else_block); break;
         case AST_TUPLE: for (int i = 0; i < n->as.tuple.count; i++) free_node(n->as.tuple.elements[i]);
             free(n->as.tuple.elements); break;
         case AST_TUPLE_ASSIGN: for (int i = 0; i < n->as.tuple_assign.name_count; i++) free(n->as.tuple_assign.names[i]);
@@ -70,6 +68,7 @@ void free_node(ast_node_t *n) {
         case AST_ENUM_LITERAL: free(n->as.enum_literal.enum_name); free(n->as.enum_literal.variant); break;
         case AST_OK_EXPR: free_node(n->as.ok_expr.value); break;
         case AST_ERR_EXPR: free_node(n->as.err_expr.value); break;
+        case AST_RESULT_TYPE: free_node(n->as.result_type.ok_type); free_node(n->as.result_type.err_type); break;
         case AST_PROGRAM: for (int i = 0; i < n->as.program.count; i++) free_node(n->as.program.declarations[i]);
             free(n->as.program.declarations); break;
         default: break;

@@ -12,6 +12,9 @@ static void emit(codegen_t *cg, const char *fmt, ...) {
 static void emit_raw(codegen_t *cg, const char *s) { fprintf(cg->output, "%s\n", s); }
 static int new_label(codegen_t *cg) { return cg->label_count++; }
 
+/* Forward declaration */
+static void add_extern(codegen_t *cg, const char *name);
+
 /* Check if name is an extern (stdlib) function — don't prefix those */
 static int is_extern(codegen_t *cg, const char *name, size_t len) {
     for (int i = 0; i < cg->extern_count; i++)
@@ -55,26 +58,30 @@ static const char *find_string_label(codegen_t *cg, const char *value, size_t le
 
 static void emit_string_data(codegen_t *cg, int label, const char *value, size_t length) {
     fprintf(cg->output, "  str_%d: db ", label);
-    for (size_t i = 0; i < length; i++) {
-        if (value[i] == '\\' && i + 1 < length) {
-            i++;
-            switch (value[i]) {
-                case 'n': fprintf(cg->output, "0x0A"); break;
-                case 't': fprintf(cg->output, "0x09"); break;
-                case '0': fprintf(cg->output, "0x00"); break;
-                case '\\': fprintf(cg->output, "0x5C"); break;
-                case '"': fprintf(cg->output, "0x22"); break;
-                case 'r': fprintf(cg->output, "0x0D"); break;
-                default: fprintf(cg->output, "0x%02X", (unsigned char)value[i]); break;
+    if (length == 0) {
+        fprintf(cg->output, "0");
+    } else {
+        for (size_t i = 0; i < length; i++) {
+            if (value[i] == '\\' && i + 1 < length) {
+                i++;
+                switch (value[i]) {
+                    case 'n': fprintf(cg->output, "0x0A"); break;
+                    case 't': fprintf(cg->output, "0x09"); break;
+                    case '0': fprintf(cg->output, "0x00"); break;
+                    case '\\': fprintf(cg->output, "0x5C"); break;
+                    case '"': fprintf(cg->output, "0x22"); break;
+                    case 'r': fprintf(cg->output, "0x0D"); break;
+                    default: fprintf(cg->output, "0x%02X", (unsigned char)value[i]); break;
+                }
+            } else if (value[i] == '"') {
+                fprintf(cg->output, "0x22");
+            } else if (value[i] >= 0x20 && (unsigned char)value[i] < 0x7F) {
+                fprintf(cg->output, "'%c'", value[i]);
+            } else {
+                fprintf(cg->output, "0x%02X", (unsigned char)value[i]);
             }
-        } else if (value[i] == '"') {
-            fprintf(cg->output, "0x22");
-        } else if (value[i] >= 0x20 && (unsigned char)value[i] < 0x7F) {
-            fprintf(cg->output, "'%c'", value[i]);
-        } else {
-            fprintf(cg->output, "0x%02X", (unsigned char)value[i]);
+            if (i < length - 1) fprintf(cg->output, ", ");
         }
-        if (i < length - 1) fprintf(cg->output, ", ");
     }
     fprintf(cg->output, ", 0\n");
 }
@@ -143,42 +150,77 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             int narg = n->as.call.arg_count;
             for (int i = (narg < 6 ? narg - 1 : 5); i >= 0; i--) {
                 gen_expr(cg, n->as.call.args[i]); emit(cg, "mov %s, rax", regs[i]); }
-            /* handle module::func() calls — emit as _module_func */
+            /* handle module::func() calls */
             if (n->as.call.callee->type == AST_BINARY_OP &&
                 n->as.call.callee->as.binary.op == TOKEN_COLONCOLON) {
                 ast_node_t *mod = n->as.call.callee->as.binary.left;
                 ast_node_t *fn = n->as.call.callee->as.binary.right;
-                fprintf(cg->output, "    call _%.*s_%.*s\n",
-                    (int)mod->as.ident.name_len, mod->as.ident.name,
-                    (int)fn->as.ident.name_len, fn->as.ident.name);
+                /* check if module is "std" — use unprefixed name */
+                char mod_name[64];
+                snprintf(mod_name, sizeof(mod_name), "%.*s",
+                    (int)mod->as.ident.name_len, mod->as.ident.name);
+                if (strcmp(mod_name, "std") == 0) {
+                    /* std functions are in syscalls.asm with original names */
+                    fprintf(cg->output, "    call ");
+                    emit_name(cg, fn->as.ident.name, fn->as.ident.name_len);
+                    fprintf(cg->output, "\n");
+                } else {
+                    /* other modules use prefixed names */
+                    fprintf(cg->output, "    call _%.*s_%.*s\n",
+                        (int)mod->as.ident.name_len, mod->as.ident.name,
+                        (int)fn->as.ident.name_len, fn->as.ident.name);
+                }
             } else {
+                /* add to extern list for linker */
+                char fn_name[64];
+                snprintf(fn_name, sizeof(fn_name), "%.*s",
+                    (int)n->as.call.callee->as.ident.name_len,
+                    n->as.call.callee->as.ident.name);
+                add_extern(cg, fn_name);
                 fprintf(cg->output, "    call ");
                 emit_name(cg, n->as.call.callee->as.ident.name, n->as.call.callee->as.ident.name_len);
                 fprintf(cg->output, "\n");
             }
             break; }
         case AST_PIPE: {
-            /* x |> f(a)  =>  f(a, x) — left goes as last arg */
+            /* x |> f(a)  =>  f(x, a) — left goes as first arg */
             ast_node_t *callee = n->as.pipe.right;
             if (callee->type == AST_CALL) {
-                /* push left value, then eval args, then pop left into last reg */
-                gen_expr(cg, n->as.pipe.left); emit(cg, "push rax");
                 const char *regs[] = {"rdi","rsi","rdx","rcx","r8","r9"};
                 int narg = callee->as.call.arg_count;
-                for (int i = (narg < 6 ? narg - 1 : 5); i >= 0; i--) {
-                    gen_expr(cg, callee->as.call.args[i]); emit(cg, "mov %s, rax", regs[i]); }
-                /* now pop left value into the next arg register */
-                int total = narg + 1;
-                if (total <= 6) { emit(cg, "pop rax"); emit(cg, "mov %s, rax", regs[narg]); }
-                else { emit(cg, "pop rax"); /* stack-based for >6 args */ }
+                /* left value goes into first arg register */
+                gen_expr(cg, n->as.pipe.left); emit(cg, "mov rdi, rax");
+                /* load remaining explicit args (shifted by 1) */
+                for (int i = (narg < 5 ? narg - 1 : 4); i >= 0; i--) {
+                    gen_expr(cg, callee->as.call.args[i]); emit(cg, "mov %s, rax", regs[i + 1]); }
                 /* handle module::func in pipeline */
                 if (callee->as.call.callee->type == AST_BINARY_OP &&
                     callee->as.call.callee->as.binary.op == TOKEN_COLONCOLON) {
                     ast_node_t *mod = callee->as.call.callee->as.binary.left;
                     ast_node_t *fn = callee->as.call.callee->as.binary.right;
-                    fprintf(cg->output, "    call _%.*s_%.*s\n",
-                        (int)mod->as.ident.name_len, mod->as.ident.name,
-                        (int)fn->as.ident.name_len, fn->as.ident.name);
+                    char mod_name[64];
+                    snprintf(mod_name, sizeof(mod_name), "%.*s",
+                        (int)mod->as.ident.name_len, mod->as.ident.name);
+                    if (strcmp(mod_name, "std") == 0) {
+                        /* add to extern list */
+                        char fn_name[64];
+                        snprintf(fn_name, sizeof(fn_name), "%.*s",
+                            (int)fn->as.ident.name_len, fn->as.ident.name);
+                        add_extern(cg, fn_name);
+                        fprintf(cg->output, "    call ");
+                        emit_name(cg, fn->as.ident.name, fn->as.ident.name_len);
+                        fprintf(cg->output, "\n");
+                    } else {
+                        /* add prefixed name to extern list */
+                        char ext_name[128];
+                        snprintf(ext_name, sizeof(ext_name), "%.*s_%.*s",
+                            (int)mod->as.ident.name_len, mod->as.ident.name,
+                            (int)fn->as.ident.name_len, fn->as.ident.name);
+                        add_extern(cg, ext_name);
+                        fprintf(cg->output, "    call _%.*s_%.*s\n",
+                            (int)mod->as.ident.name_len, mod->as.ident.name,
+                            (int)fn->as.ident.name_len, fn->as.ident.name);
+                    }
                 } else {
                     fprintf(cg->output, "    call ");
                     emit_name(cg, callee->as.call.callee->as.ident.name, callee->as.call.callee->as.ident.name_len);
@@ -186,16 +228,24 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
                 }
             } else {
                 /* x |> f  =>  f(x) */
+                if (callee->type != AST_IDENT) {
+                    fprintf(stderr, "codegen error: |> right side must be a function call or identifier\n");
+                    break;
+                }
                 gen_expr(cg, n->as.pipe.left); emit(cg, "mov rdi, rax");
-                gen_expr(cg, callee);
-                fprintf(cg->output, "    call "); emit_name(cg, callee->as.ident.name, callee->as.ident.name_len);
+                /* add to extern list */
+                char fn_name[64];
+                snprintf(fn_name, sizeof(fn_name), "%.*s",
+                    (int)callee->as.ident.name_len, callee->as.ident.name);
+                add_extern(cg, fn_name);
+                fprintf(cg->output, "    call ");
+                emit_name(cg, callee->as.ident.name, callee->as.ident.name_len);
                 fprintf(cg->output, "\n");
             }
             break; }
         case AST_OK_EXPR: gen_expr(cg, n->as.ok_expr.value); emit(cg, "shl rax, 1"); break;
         case AST_ERR_EXPR: gen_expr(cg, n->as.err_expr.value); emit(cg, "shl rax, 1"); emit(cg, "or rax, 1"); break;
         case AST_MATCH: gen_stmt(cg, n); break;
-        case AST_WHEN: { int sr = cg->returned; gen_stmt(cg, n); cg->returned = sr; break; }
         case AST_IF: { int sr = cg->returned; gen_stmt(cg, n); cg->returned = sr; break; }
         case AST_TUPLE: {
             /* evaluate elements, push them right-to-left, result is a "tuple" on stack */
@@ -206,19 +256,26 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             /* rax = stack pointer to first element (for now, just leave values on stack) */
             break; }
         case AST_ARRAY_LITERAL: {
-            /* [1, 2, 3] — allocate on stack, store elements, return pointer */
+            /* [1, 2, 3] — allocate in stack frame, store elements, return pointer
+             * Layout (growing toward rbp):
+             *   [rbp - base]          = length
+             *   [rbp - base + 8]      = elem[0]   ← pointer goes here
+             *   [rbp - base + 8 + i*8] = elem[i]
+             *   [rbp - base + 8 + (N-1)*8] = elem[N-1]
+             */
             int count = n->as.array_literal.count;
             int total = (count + 1) * 8; /* +1 for length qword */
-            emit(cg, "sub rsp, %d", total);
-            /* store length */
-            emit(cg, "mov qword [rsp], %d", count);
-            /* store elements */
+            int base = cg->stack_size + total;
+            cg->stack_size += total;
+            /* length at [rbp - base] */
+            emit(cg, "mov qword [rbp-%d], %d", base, count);
+            /* elem[i] at [rbp - base + 8 + i*8] */
             for (int i = 0; i < count; i++) {
                 gen_expr(cg, n->as.array_literal.elements[i]);
-                emit(cg, "mov [rsp+%d], rax", 8 + i * 8);
+                emit(cg, "mov [rbp-%d], rax", base - 8 - i * 8);
             }
-            /* rax = pointer to first element (skip length qword) */
-            emit(cg, "lea rax, [rsp+8]");
+            /* pointer to first element */
+            emit(cg, "lea rax, [rbp-%d]", base - 8);
             break; }
         case AST_INDEX: {
             /* arr[i] — compute base + index*8, load value */
@@ -264,6 +321,7 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             /* Err case: run handler */
             fprintf(cg->output, "L%d:\n", err_label);
             emit(cg, "shr rax, 1");
+            int saved_stack = cg->stack_size;
             int err_off = add_sym(cg, "__catch_err", 8);
             emit(cg, "mov [rbp-%d], rax", err_off);
             int saved_scope = cg->scope_depth;
@@ -271,6 +329,7 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             gen_node(cg, n->as.catch_expr.handler);
             if (!cg->returned) emit_defers(cg, cg->scope_depth);
             cg->scope_depth = saved_scope;
+            cg->stack_size = saved_stack;
             fprintf(cg->output, "L%d:\n", end_label);
             break; }
         default: break;
@@ -293,6 +352,11 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
                     emit(cg, "pop rax");
                     emit(cg, "mov [rbp-%d], rax", off);
                 }
+            } else if (n->as.let.value && n->as.let.value->type == AST_ARRAY_LITERAL) {
+                /* generate array first so its data is at lower addresses than the variable */
+                gen_expr(cg, n->as.let.value);
+                int off = add_sym(cg, n->as.let.name, 8);
+                emit(cg, "mov [rbp-%d], rax", off);
             } else {
                 int off = add_sym(cg, n->as.let.name, 8);
                 if (n->as.let.value) { gen_expr(cg, n->as.let.value); emit(cg, "mov [rbp-%d], rax", off); }
@@ -337,21 +401,6 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
                 cg->returned = 0;
             }
             if (cg->in_return_expr) cg->returned = saved_ret;
-            break; }
-        case AST_WHEN: {
-            /* when is like if but always leaves a value in rax */
-            int el = new_label(cg), end = new_label(cg);
-            gen_expr(cg, n->as.when_expr.condition);
-            emit(cg, "cmp rax, 0"); emit(cg, "je L%d", el);
-            cg->returned = 0;
-            gen_node(cg, n->as.when_expr.then_block);
-            emit(cg, "jmp L%d", end);
-            fprintf(cg->output, "L%d:\n", el);
-            if (n->as.when_expr.else_block) {
-                cg->returned = 0;
-                gen_node(cg, n->as.when_expr.else_block);
-            }
-            fprintf(cg->output, "L%d:\n", end);
             break; }
         case AST_WHILE: {
             int loop = new_label(cg), end = new_label(cg);
@@ -411,13 +460,21 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
             cg->returned = 0;
             cg->scope_depth = 0;
             int saved_defer_count = cg->defer_count;
-            /* allocate stack space for locals AFTER storing params */
-            emit(cg, "sub rsp, 256");
+            /* save position for stack allocation patch */
+            cg->sub_rsp_pos = ftell(cg->output);
+            fprintf(cg->output, "    sub rsp, 0x00000000\n"); /* placeholder */
             gen_node(cg, n->as.fn_decl.body);
             if (!cg->returned) {
                 emit(cg, "xor rax, rax");
             }
-            emit(cg, "add rsp, 256");
+            /* patch the stack allocation with actual size */
+            int stack_needed = cg->stack_size - 40;
+            if (stack_needed < 0) stack_needed = 0;
+            long cur_pos = ftell(cg->output);
+            fseek(cg->output, cg->sub_rsp_pos, SEEK_SET);
+            fprintf(cg->output, "    sub rsp, 0x%08X", (unsigned)stack_needed);
+            fseek(cg->output, cur_pos, SEEK_SET);
+            emit(cg, "add rsp, 0x%08X", (unsigned)stack_needed);
             emit(cg, "pop r15"); emit(cg, "pop r14"); emit(cg, "pop r13"); emit(cg, "pop r12"); emit(cg, "pop rbx");
             emit(cg, "mov rsp, rbp"); emit(cg, "pop rbp"); emit(cg, "ret");
             cg->stack_size = saved;
@@ -533,7 +590,7 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
             /* Err case: run handler */
             fprintf(cg->output, "L%d:\n", err_label);
             emit(cg, "shr rax, 1");
-            /* store error value in a temp variable for the handler */
+            int saved_stack = cg->stack_size;
             int err_off = add_sym(cg, "__catch_err", 8);
             emit(cg, "mov [rbp-%d], rax", err_off);
             int saved_scope = cg->scope_depth;
@@ -541,6 +598,7 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
             gen_node(cg, n->as.catch_expr.handler);
             if (!cg->returned) emit_defers(cg, cg->scope_depth);
             cg->scope_depth = saved_scope;
+            cg->stack_size = saved_stack;
             fprintf(cg->output, "L%d:\n", end_label);
             break; }
         case AST_PANIC_EXPR: {
@@ -549,6 +607,7 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
                 gen_expr(cg, n->as.panic_expr.message);
                 emit(cg, "mov rdi, rax");
             }
+            add_extern(cg, "panic_handler");
             fprintf(cg->output, "    call ");
             emit_name(cg, "panic_handler", 13);
             fprintf(cg->output, "\n");
@@ -562,6 +621,7 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
                 gen_expr(cg, n->as.assert_expr.message);
                 emit(cg, "mov rsi, rax");
             }
+            add_extern(cg, "assert_handler");
             fprintf(cg->output, "    call ");
             emit_name(cg, "assert_handler", 14);
             fprintf(cg->output, "\n");
@@ -593,12 +653,13 @@ static void collect_strings(codegen_t *cg, ast_node_t *n) {
         case AST_UNARY_OP: collect_strings(cg, n->as.unary.operand); break;
         case AST_RANGE: collect_strings(cg, n->as.range.left); collect_strings(cg, n->as.range.right); break;
         case AST_PIPE: collect_strings(cg, n->as.pipe.left); collect_strings(cg, n->as.pipe.right); break;
-        case AST_CALL: collect_strings(cg, n->as.call.callee);
-            for (int i = 0; i < n->as.call.arg_count; i++) collect_strings(cg, n->as.call.args[i]); break;
+        case AST_CALL:
+            collect_strings(cg, n->as.call.callee);
+            for (int i = 0; i < n->as.call.arg_count; i++)
+                collect_strings(cg, n->as.call.args[i]);
+            break;
         case AST_IF: collect_strings(cg, n->as.if_stmt.condition); collect_strings(cg, n->as.if_stmt.then_block);
             collect_strings(cg, n->as.if_stmt.else_block); break;
-        case AST_WHEN: collect_strings(cg, n->as.when_expr.condition); collect_strings(cg, n->as.when_expr.then_block);
-            collect_strings(cg, n->as.when_expr.else_block); break;
         case AST_WHILE: collect_strings(cg, n->as.while_stmt.condition); collect_strings(cg, n->as.while_stmt.body); break;
         case AST_FOR: collect_strings(cg, n->as.for_stmt.iterable); collect_strings(cg, n->as.for_stmt.body); break;
         case AST_BLOCK: for (int i = 0; i < n->as.block.count; i++) collect_strings(cg, n->as.block.stmts[i]); break;
@@ -620,6 +681,7 @@ static void collect_strings(codegen_t *cg, ast_node_t *n) {
         case AST_TUPLE: for (int i = 0; i < n->as.tuple.count; i++) collect_strings(cg, n->as.tuple.elements[i]); break;
         case AST_ARRAY_LITERAL: for (int i = 0; i < n->as.array_literal.count; i++) collect_strings(cg, n->as.array_literal.elements[i]); break;
         case AST_LEN_EXPR: collect_strings(cg, n->as.len_expr.operand); break;
+        case AST_RESULT_TYPE: collect_strings(cg, n->as.result_type.ok_type); collect_strings(cg, n->as.result_type.err_type); break;
         case AST_TUPLE_ASSIGN: collect_strings(cg, n->as.tuple_assign.value); break;
         case AST_PROGRAM: for (int i = 0; i < n->as.program.count; i++) collect_strings(cg, n->as.program.declarations[i]); break;
         default: break;
@@ -632,6 +694,7 @@ void codegen_init(codegen_t *cg, FILE *output) {
     cg->strings = NULL; cg->string_entries = 0; cg->is_main = 1; cg->returned = 0;
     cg->defers = NULL; cg->defer_count = 0; cg->defer_cap = 0; cg->scope_depth = 0;
     cg->extern_names = NULL; cg->extern_count = 0; cg->in_return_expr = 0;
+    cg->sub_rsp_pos = 0;
 }
 
 void codegen_free(codegen_t *cg) {
@@ -653,27 +716,31 @@ static void add_extern(codegen_t *cg, const char *name) {
 int codegen_program(codegen_t *cg, ast_node_t *prog) {
     collect_strings(cg, prog);
     emit_raw(cg, "; Generated by ELang compiler v0.2.0");
-    const char *externs[] = {
-        "print", "print_str", "print_int", "print_hex",
-        "read_input", "exit",
-        "str_len", "str_dup", "str_cmp", "str_cat",
-        "sys_open", "sys_close", "sys_read", "sys_write",
-        "sys_getpid", "sys_exit", "sys_brk",
-        "panic_handler", "assert_handler"
-    };
-    for (int i = 0; i < (int)(sizeof(externs)/sizeof(externs[0])); i++) {
-        fprintf(cg->output, "extern %s\n", externs[i]);
-        add_extern(cg, externs[i]);
-    }
+
+    /* Collect all function calls for extern declarations */
+    /* This is done during codegen, so we emit externs after gen_node */
+
     if (cg->string_entries > 0) {
         emit_raw(cg, "section .data");
         for (int i = 0; i < cg->string_entries; i++)
             emit_string_data(cg, cg->strings[i].label, cg->strings[i].value, cg->strings[i].length);
     }
-    emit_raw(cg, "section .text"); emit_raw(cg, "global _start"); emit_raw(cg, "");
+    emit_raw(cg, "section .text");
     gen_node(cg, prog);
-    emit_raw(cg, ""); emit_raw(cg, "_start:");
-    emit_raw(cg, "    call _main"); emit(cg, "mov rdi, rax");
-    emit(cg, "mov rax, 60"); emit(cg, "syscall");
+
+    /* Emit extern declarations for all called functions */
+    /* The linker will resolve these */
+    fprintf(cg->output, "\n; Extern declarations (resolved by linker)\n");
+    for (int i = 0; i < cg->extern_count; i++) {
+        fprintf(cg->output, "extern %s\n", cg->extern_names[i]);
+    }
+
+    /* Only emit _start for main programs, not libraries */
+    if (cg->is_main) {
+        emit_raw(cg, "global _start"); emit_raw(cg, "");
+        emit_raw(cg, "_start:");
+        emit_raw(cg, "    call _main"); emit(cg, "mov rdi, rax");
+        emit(cg, "mov rax, 60"); emit(cg, "syscall");
+    }
     return 0;
 }

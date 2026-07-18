@@ -42,7 +42,7 @@ its value becomes the function's return value. Explicit `return` still works for
 
 ## Feature 2: Pipeline Operator `|>`
 
-Pass the left value as the LAST argument of the right function.
+Pass the left value as the FIRST argument of the right function.
 
 ```elang
 // Before
@@ -95,21 +95,21 @@ let (a, b) = (b, a)
 
 ---
 
-## Feature 4: `when` — Expression-oriented If
+## Feature 4: Expression-oriented `if`
 
-`when` is an expression that returns a value. `if` remains a statement.
+`if` is an expression that returns a value. `else if` chains are supported.
 
 ```elang
-// when returns a value
-let status = when x > 0 {
+// if returns a value
+let status = if x > 0 {
     "positive"
-} else when x == 0 {
+} else if x == 0 {
     "zero"
 } else {
     "negative"
 }
 
-// if stays as a statement (no confusion)
+// if as a statement
 if x > 0 {
     print_str("positive\n")
 }
@@ -291,7 +291,7 @@ fn main() -> void {
     let input = io::read_line()
     let result = process(input)
 
-    when str_len(result) > 0 {
+    if str_len(result) > 0 {
         io::print(result)
     } else {
         io::print("(empty)")
@@ -376,15 +376,16 @@ let value = risky_operation() catch {
 |---------|-----------|--------|--------|
 | Implicit return | Low | High — less boilerplate everywhere | Done |
 | `\|>` pipeline | Medium | High — defines the language's identity | Done |
-| `when` expression | Low | Medium — cleaner than if-as-expression | Done |
+| Expression-oriented `if` | Low | Medium — cleaner than if-as-expression | Done |
 | `defer` | Medium | High — essential for systems programming | Done |
 | Optional braces (`=>`) | Low | Medium — cleaner single-line functions | Done |
 | Tuple unpacking | Medium | Medium — multiple returns become natural | Done |
 | `using` imports | Low | Low — nice to have | Done |
 | **Arrays** | **Medium** | **High — enables practical programs** | **Done** |
+| **Result\<T, E\>** | **Medium** | **High — type-safe error handling** | **Done** |
 | Struct methods | Medium | High — OOP-style organization | Planned |
 | Enum variants with data | Medium | High — algebraic data types | Planned |
 | Error handling (`?`, `catch`) | Medium | High — ergonomic error propagation | Done |
 | Named arguments | Medium | Low — quality of life | Planned |
 
-Start with implicit return + pipeline + when. Those three define ELang's character.
+Start with implicit return + pipeline + expression-oriented if. Those three define ELang's character.

@@ -9,7 +9,7 @@ fn negate(x: i64) -> i64 { 0 - x }
 fn iabs(x: i64) -> i64 =>
     if x < 0 { negate(x) } else { x }
 
-fn divide(a: i64, b: i64) -> i64 {
+fn divide(a: i64, b: i64) -> Result<i64, i64> {
     if b == 0 {
         return Err(0)
     }
@@ -31,10 +31,10 @@ fn main() -> void {
     3 |> mul(7) |> add(1) |> print_int()
     print_str("\n")
 
-    // when expression
-    print_str("\n=== When Expression ===\n")
+    // if expression
+    print_str("\n=== If Expression ===\n")
     let x = 42
-    when x > 0 {
+    if x > 0 {
         print_str("positive\n")
     } else {
         print_str("non-positive\n")

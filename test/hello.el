@@ -13,7 +13,7 @@ fn main() -> void {
         print_str("x is positive\n")
     }
 
-    let i = 0
+    let mut i = 0
     while i < 5 {
         print_str("Loop: ")
         print_int(i)
@@ -50,7 +50,7 @@ fn add(a: i64, b: i64) -> i64 {
     a + b
 }
 
-fn divide(a: i64, b: i64) -> i64 {
+fn divide(a: i64, b: i64) -> Result<i64, i64> {
     if b == 0 {
         return Err(0)
     }

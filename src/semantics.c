@@ -5,6 +5,12 @@
 #include <stdarg.h>
 #include "semantics.h"
 
+/* ===== External Function Handling ===== */
+/* The compiler doesn't know about library functions.
+   All unresolved function calls are treated as extern.
+   The linker resolves them at link time. */
+
+
 /* ===== Type Info ===== */
 
 type_info_t *type_new(type_kind_t kind) {
@@ -35,6 +41,13 @@ type_info_t *type_new_fn(type_info_t **params, int param_count, type_info_t *ret
     return t;
 }
 
+type_info_t *type_new_result(type_info_t *ok_type, type_info_t *err_type) {
+    type_info_t *t = type_new(TYPE_RESULT);
+    t->result.ok_type = ok_type;
+    t->result.err_type = err_type;
+    return t;
+}
+
 type_info_t *type_copy(type_info_t *t) {
     if (!t) return NULL;
     type_info_t *c = type_new(t->kind);
@@ -46,12 +59,18 @@ type_info_t *type_copy(type_info_t *t) {
         for (int i = 0; i < t->fn.count; i++)
             c->fn.params[i] = type_copy(t->fn.params[i]);
     }
+    if (t->kind == TYPE_RESULT) {
+        c->result.ok_type = type_copy(t->result.ok_type);
+        c->result.err_type = type_copy(t->result.err_type);
+    }
     if (t->struct_name) c->struct_name = strdup(t->struct_name);
     return c;
 }
 
 int type_equal(type_info_t *a, type_info_t *b) {
     if (!a || !b) return a == b;
+    /* TYPE_UNKNOWN matches any type (wildcard) */
+    if (a->kind == TYPE_UNKNOWN || b->kind == TYPE_UNKNOWN) return 1;
     if (a->kind != b->kind) return 0;
     switch (a->kind) {
         case TYPE_POINTER: return type_equal(a->base, b->base);
@@ -63,6 +82,10 @@ int type_equal(type_info_t *a, type_info_t *b) {
             if (a->fn.count != b->fn.count) return 0;
             for (int i = 0; i < a->fn.count; i++)
                 if (!type_equal(a->fn.params[i], b->fn.params[i])) return 0;
+            return 1;
+        case TYPE_RESULT:
+            if (!type_equal(a->result.ok_type, b->result.ok_type)) return 0;
+            if (!type_equal(a->result.err_type, b->result.err_type)) return 0;
             return 1;
         default: return 1;
     }
@@ -84,6 +107,56 @@ int type_is_signed(type_info_t *t) {
     return t->kind >= TYPE_I8 && t->kind <= TYPE_I64;
 }
 
+const char *type_name_buf(type_info_t *t, char *buf, size_t size) {
+    if (!t) { snprintf(buf, size, "?"); return buf; }
+    switch (t->kind) {
+        case TYPE_UNKNOWN: snprintf(buf, size, "?"); return buf;
+        case TYPE_VOID: snprintf(buf, size, "void"); return buf;
+        case TYPE_BOOL: snprintf(buf, size, "bool"); return buf;
+        case TYPE_CHAR: snprintf(buf, size, "char"); return buf;
+        case TYPE_I8: snprintf(buf, size, "i8"); return buf;
+        case TYPE_I16: snprintf(buf, size, "i16"); return buf;
+        case TYPE_I32: snprintf(buf, size, "i32"); return buf;
+        case TYPE_I64: snprintf(buf, size, "i64"); return buf;
+        case TYPE_U8: snprintf(buf, size, "u8"); return buf;
+        case TYPE_U16: snprintf(buf, size, "u16"); return buf;
+        case TYPE_U32: snprintf(buf, size, "u32"); return buf;
+        case TYPE_U64: snprintf(buf, size, "u64"); return buf;
+        case TYPE_F32: snprintf(buf, size, "f32"); return buf;
+        case TYPE_F64: snprintf(buf, size, "f64"); return buf;
+        case TYPE_STRING: snprintf(buf, size, "string"); return buf;
+        case TYPE_POINTER: {
+            char tmp[64];
+            type_name_buf(t->base, tmp, sizeof(tmp));
+            snprintf(buf, size, "*%s", tmp);
+            return buf;
+        }
+        case TYPE_ARRAY: {
+            char tmp[64];
+            type_name_buf(t->base, tmp, sizeof(tmp));
+            if (t->array_len >= 0)
+                snprintf(buf, size, "[%s; %d]", tmp, t->array_len);
+            else
+                snprintf(buf, size, "[%s]", tmp);
+            return buf;
+        }
+        case TYPE_FN: snprintf(buf, size, "fn"); return buf;
+        case TYPE_STRUCT: snprintf(buf, size, "%s", t->struct_name ? t->struct_name : "struct"); return buf;
+        case TYPE_ENUM: snprintf(buf, size, "%s", t->struct_name ? t->struct_name : "enum"); return buf;
+        case TYPE_OK_RESULT: snprintf(buf, size, "Ok"); return buf;
+        case TYPE_ERR_RESULT: snprintf(buf, size, "Err"); return buf;
+        case TYPE_RESULT: {
+            char ok_buf[64], err_buf[64];
+            type_name_buf(t->result.ok_type, ok_buf, sizeof(ok_buf));
+            type_name_buf(t->result.err_type, err_buf, sizeof(err_buf));
+            snprintf(buf, size, "Result<%s, %s>", ok_buf, err_buf);
+            return buf;
+        }
+    }
+    snprintf(buf, size, "?");
+    return buf;
+}
+
 const char *type_name(type_info_t *t) {
     if (!t) return "?";
     switch (t->kind) {
@@ -97,26 +170,21 @@ const char *type_name(type_info_t *t) {
         case TYPE_U32: return "u32"; case TYPE_U64: return "u64";
         case TYPE_F32: return "f32"; case TYPE_F64: return "f64";
         case TYPE_STRING: return "string";
-        case TYPE_POINTER: {
-            static char buf[128];
-            snprintf(buf, sizeof(buf), "*%s", type_name(t->base));
-            return buf;
-        }
-        case TYPE_ARRAY: {
-            static char buf[128];
-            if (t->array_len >= 0)
-                snprintf(buf, sizeof(buf), "[%s; %d]", type_name(t->base), t->array_len);
-            else
-                snprintf(buf, sizeof(buf), "[%s]", type_name(t->base));
-            return buf;
-        }
         case TYPE_FN: return "fn";
         case TYPE_STRUCT: return t->struct_name ? t->struct_name : "struct";
         case TYPE_ENUM: return t->struct_name ? t->struct_name : "enum";
         case TYPE_OK_RESULT: return "Ok";
         case TYPE_ERR_RESULT: return "Err";
+        default: break;
     }
-    return "?";
+    /* for pointer/array types, use rotating static buffers */
+    {
+        static char bufs[4][128];
+        static int idx = 0;
+        char *buf = bufs[idx++ & 3];
+        type_name_buf(t, buf, sizeof(bufs[0]));
+        return buf;
+    }
 }
 
 /* ===== Scope / Symbol Table ===== */
@@ -201,27 +269,7 @@ void sem_error(sem_ctx_t *ctx, int line, int col, const char *fmt, ...) {
     ctx->has_errors = 1;
 }
 
-/* ===== Type from token/AST ===== */
-
-static type_info_t *type_from_token(token_type_t t) {
-    switch (t) {
-        case TOKEN_I8: return type_new(TYPE_I8);
-        case TOKEN_I16: return type_new(TYPE_I16);
-        case TOKEN_I32: return type_new(TYPE_I32);
-        case TOKEN_I64: return type_new(TYPE_I64);
-        case TOKEN_U8: return type_new(TYPE_U8);
-        case TOKEN_U16: return type_new(TYPE_U16);
-        case TOKEN_U32: return type_new(TYPE_U32);
-        case TOKEN_U64: return type_new(TYPE_U64);
-        case TOKEN_F32: return type_new(TYPE_F32);
-        case TOKEN_F64: return type_new(TYPE_F64);
-        case TOKEN_BOOL: return type_new(TYPE_BOOL);
-        case TOKEN_CHAR: return type_new(TYPE_CHAR);
-        case TOKEN_STRING: return type_new(TYPE_STRING);
-        case TOKEN_VOID: return type_new(TYPE_VOID);
-        default: return type_new(TYPE_UNKNOWN);
-    }
-}
+/* ===== Type from AST ===== */
 
 type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
     if (!type_node) return NULL;
@@ -257,6 +305,12 @@ type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
                 return type_new_pointer(base);
             }
             break;
+        }
+        case AST_RESULT_TYPE: {
+            /* Result<T, E> type */
+            type_info_t *ok = sem_resolve_type(ctx, type_node->as.result_type.ok_type);
+            type_info_t *err = sem_resolve_type(ctx, type_node->as.result_type.err_type);
+            return type_new_result(ok, err);
         }
         default: break;
     }
@@ -318,24 +372,46 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
                 if (sym && sym->type && sym->type->kind == TYPE_FN) {
                     return type_copy(sym->type->base); /* return type */
                 }
+                /* function not found — treat as extern (linker will resolve) */
+                return type_new(TYPE_UNKNOWN);
+            }
+            /* handle module::func() calls */
+            if (node->as.call.callee->type == AST_BINARY_OP &&
+                node->as.call.callee->as.binary.op == TOKEN_COLONCOLON) {
+                ast_node_t *mod = node->as.call.callee->as.binary.left;
+                ast_node_t *fn = node->as.call.callee->as.binary.right;
+                /* build renamed name: module_func */
+                char name[128];
+                snprintf(name, sizeof(name), "%.*s_%.*s",
+                    (int)mod->as.ident.name_len, mod->as.ident.name,
+                    (int)fn->as.ident.name_len, fn->as.ident.name);
+                symbol_t *sym = scope_find(ctx->current_scope, name);
+                if (sym && sym->type && sym->type->kind == TYPE_FN) {
+                    return type_copy(sym->type->base);
+                }
             }
             return type_new(TYPE_UNKNOWN);
         }
 
         case AST_OK_EXPR: {
-            /* Ok(val) — return the inner type (Result is opaque for now) */
-            if (node->as.ok_expr.value) return sem_infer_expr(ctx, node->as.ok_expr.value);
-            return type_new(TYPE_UNKNOWN);
+            /* Ok(val) — returns Result<T, E> where T is val's type */
+            type_info_t *val_type = node->as.ok_expr.value
+                ? sem_infer_expr(ctx, node->as.ok_expr.value)
+                : type_new(TYPE_UNKNOWN);
+            return type_new_result(val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN),
+                                   type_new(TYPE_UNKNOWN));
         }
 
         case AST_ERR_EXPR: {
-            /* Err(val) — same as Ok for now */
-            if (node->as.err_expr.value) return sem_infer_expr(ctx, node->as.err_expr.value);
-            return type_new(TYPE_UNKNOWN);
+            /* Err(val) — returns Result<T, E> where E is val's type */
+            type_info_t *val_type = node->as.err_expr.value
+                ? sem_infer_expr(ctx, node->as.err_expr.value)
+                : type_new(TYPE_UNKNOWN);
+            return type_new_result(type_new(TYPE_UNKNOWN),
+                                   val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN));
         }
 
         case AST_MATCH: return sem_infer_expr(ctx, node->as.match_expr.value);
-        case AST_WHEN: return sem_infer_expr(ctx, node->as.when_expr.then_block);
         case AST_PIPE: {
             if (node->as.pipe.right->type == AST_CALL)
                 return sem_infer_expr(ctx, node->as.pipe.right);
@@ -434,10 +510,13 @@ void sem_fold_constants(ast_node_t *node) {
                     case TOKEN_GTE: result = a >= b; break;
                     default: return;
                 }
+                /* save children before overwriting the union */
+                ast_node_t *left = node->as.binary.left;
+                ast_node_t *right = node->as.binary.right;
                 node->type = AST_INT_LIT;
                 node->as.int_val = result;
-                free_node(node->as.binary.left);
-                free_node(node->as.binary.right);
+                free_node(left);
+                free_node(right);
             }
             /* fold string + string */
             if (node->as.binary.op == TOKEN_PLUS &&
@@ -451,11 +530,14 @@ void sem_fold_constants(ast_node_t *node) {
                 buf[l1 + l2] = '\0';
                 free(node->as.binary.left->as.string_val.value);
                 free(node->as.binary.right->as.string_val.value);
-                free_node(node->as.binary.left);
-                free_node(node->as.binary.right);
+                /* save children before overwriting the union */
+                ast_node_t *left = node->as.binary.left;
+                ast_node_t *right = node->as.binary.right;
                 node->type = AST_STRING_LIT;
                 node->as.string_val.value = buf;
                 node->as.string_val.length = l1 + l2;
+                free_node(left);
+                free_node(right);
             }
             break;
         case AST_IF:
@@ -474,17 +556,13 @@ void sem_fold_constants(ast_node_t *node) {
                             blk->as.block.count--;
                             free_node(node->as.if_stmt.condition);
                             free_node(node->as.if_stmt.else_block);
+                            free_node(blk); /* frees remaining statements + the block itself */
                             *node = *last;
                             free(last);
                         }
                     }
                 }
             }
-            break;
-        case AST_WHEN:
-            sem_fold_constants(node->as.when_expr.condition);
-            sem_fold_constants(node->as.when_expr.then_block);
-            sem_fold_constants(node->as.when_expr.else_block);
             break;
         case AST_RETURN: sem_fold_constants(node->as.ret.value); break;
         case AST_BLOCK:
@@ -526,6 +604,10 @@ void sem_fold_constants(ast_node_t *node) {
             break;
         case AST_FN_DECL:
             sem_fold_constants(node->as.fn_decl.body);
+            break;
+        case AST_RESULT_TYPE:
+            sem_fold_constants(node->as.result_type.ok_type);
+            sem_fold_constants(node->as.result_type.err_type);
             break;
         case AST_PROGRAM:
             for (int i = 0; i < node->as.program.count; i++)
@@ -668,12 +750,6 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
                     sem_block(ctx, node->as.if_stmt.else_block);
             }
             break;
-        case AST_WHEN:
-            sem_fold_constants(node->as.when_expr.condition);
-            sem_block(ctx, node->as.when_expr.then_block);
-            if (node->as.when_expr.else_block)
-                sem_block(ctx, node->as.when_expr.else_block);
-            break;
         case AST_WHILE:
             sem_fold_constants(node->as.while_stmt.condition);
             sem_block(ctx, node->as.while_stmt.body);
@@ -720,7 +796,17 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
         case AST_STRUCT_DECL:
         case AST_ENUM_DECL:
         case AST_IMPORT_DECL:
-        case AST_USING:
+        case AST_USING: {
+            /* check if this is "std" module */
+            if (node->as.using_decl.path_len == 3 &&
+                memcmp(node->as.using_decl.path, "std", 3) == 0) {
+                ctx->std_imported = 1;
+            }
+            break;
+        }
+        case AST_CALL:
+            /* check function calls for unknown functions */
+            sem_infer_expr(ctx, node);
             break;
         case AST_BLOCK:
             sem_block(ctx, node);

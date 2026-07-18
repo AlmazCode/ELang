@@ -25,6 +25,7 @@ typedef struct {
     char **extern_names;
     int extern_count;
     int in_return_expr;
+    long sub_rsp_pos;   /* file offset of sub rsp placeholder for patching */
 } codegen_t;
 
 void codegen_init(codegen_t *cg, FILE *output);

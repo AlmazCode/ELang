@@ -38,46 +38,103 @@ static void print_ast(ast_node_t *n, int indent) {
         case AST_INT_LIT: printf("IntLit(%ld)\n", n->as.int_val); break;
         case AST_STRING_LIT: printf("StringLit(\"%.*s\")\n", (int)n->as.string_val.length, n->as.string_val.value); break;
         case AST_IDENT: printf("Ident(%.*s)\n", (int)n->as.ident.name_len, n->as.ident.name); break;
-        case AST_BINARY_OP: printf("BinaryOp(%s)\n", token_type_name(n->as.binary.op));
-            print_ast(n->as.binary.left, indent+1); print_ast(n->as.binary.right, indent+1); break;
-        case AST_RANGE: printf("Range\n");
-            print_ast(n->as.range.left, indent+1); print_ast(n->as.range.right, indent+1); break;
-        case AST_FN_DECL: printf("FnDecl(%.*s)\n", (int)n->as.fn_decl.name_len, n->as.fn_decl.name);
-            print_ast(n->as.fn_decl.body, indent+1); break;
-        case AST_LET: printf("Let(%s)\n", n->as.let.name);
-            if (n->as.let.value) print_ast(n->as.let.value, indent+1); break;
-        case AST_ASSIGN: printf("Assign\n");
-            print_ast(n->as.assign.target, indent+1); print_ast(n->as.assign.value, indent+1); break;
-        case AST_IF: printf("If\n");
-            print_ast(n->as.if_stmt.condition, indent+1); print_ast(n->as.if_stmt.then_block, indent+1); break;
-        case AST_WHILE: printf("While\n");
-            print_ast(n->as.while_stmt.condition, indent+1); print_ast(n->as.while_stmt.body, indent+1); break;
-        case AST_FOR: printf("For(%.*s)\n", (int)n->as.for_stmt.var_len, n->as.for_stmt.var);
-            print_ast(n->as.for_stmt.body, indent+1); break;
-        case AST_BLOCK: printf("Block(%d)\n", n->as.block.count);
-            for (int i = 0; i < n->as.block.count; i++) print_ast(n->as.block.stmts[i], indent+1); break;
-        case AST_RETURN: printf("Return\n"); if (n->as.ret.value) print_ast(n->as.ret.value, indent+1); break;
-        case AST_CALL: printf("Call\n"); print_ast(n->as.call.callee, indent+1); break;
-        case AST_MATCH: printf("Match\n"); print_ast(n->as.match_expr.value, indent+1); break;
+        case AST_BINARY_OP:
+            printf("BinaryOp(%s)\n", token_type_name(n->as.binary.op));
+            print_ast(n->as.binary.left, indent+1);
+            print_ast(n->as.binary.right, indent+1);
+            break;
+        case AST_RANGE:
+            printf("Range\n");
+            print_ast(n->as.range.left, indent+1);
+            print_ast(n->as.range.right, indent+1);
+            break;
+        case AST_FN_DECL:
+            printf("FnDecl(%.*s)\n", (int)n->as.fn_decl.name_len, n->as.fn_decl.name);
+            print_ast(n->as.fn_decl.body, indent+1);
+            break;
+        case AST_LET:
+            printf("Let(%s)\n", n->as.let.name);
+            if (n->as.let.value) print_ast(n->as.let.value, indent+1);
+            break;
+        case AST_ASSIGN:
+            printf("Assign\n");
+            print_ast(n->as.assign.target, indent+1);
+            print_ast(n->as.assign.value, indent+1);
+            break;
+        case AST_IF:
+            printf("If\n");
+            print_ast(n->as.if_stmt.condition, indent+1);
+            print_ast(n->as.if_stmt.then_block, indent+1);
+            break;
+        case AST_WHILE:
+            printf("While\n");
+            print_ast(n->as.while_stmt.condition, indent+1);
+            print_ast(n->as.while_stmt.body, indent+1);
+            break;
+        case AST_FOR:
+            printf("For(%.*s)\n", (int)n->as.for_stmt.var_len, n->as.for_stmt.var);
+            print_ast(n->as.for_stmt.body, indent+1);
+            break;
+        case AST_BLOCK:
+            printf("Block(%d)\n", n->as.block.count);
+            for (int i = 0; i < n->as.block.count; i++)
+                print_ast(n->as.block.stmts[i], indent+1);
+            break;
+        case AST_RETURN:
+            printf("Return\n");
+            if (n->as.ret.value) print_ast(n->as.ret.value, indent+1);
+            break;
+        case AST_CALL:
+            printf("Call\n");
+            print_ast(n->as.call.callee, indent+1);
+            break;
+        case AST_MATCH:
+            printf("Match\n");
+            print_ast(n->as.match_expr.value, indent+1);
+            break;
         case AST_STRUCT_DECL: printf("Struct(%.*s)\n", (int)n->as.struct_decl.name_len, n->as.struct_decl.name); break;
         case AST_ENUM_DECL: printf("Enum(%.*s)\n", (int)n->as.enum_decl.name_len, n->as.enum_decl.name); break;
-        case AST_OK_EXPR: printf("Ok\n"); if (n->as.ok_expr.value) print_ast(n->as.ok_expr.value, indent+1); break;
-        case AST_ERR_EXPR: printf("Err\n"); if (n->as.err_expr.value) print_ast(n->as.err_expr.value, indent+1); break;
-        case AST_PIPE: printf("Pipe\n");
-            print_ast(n->as.pipe.left, indent+1); print_ast(n->as.pipe.right, indent+1); break;
+        case AST_OK_EXPR:
+            printf("Ok\n");
+            if (n->as.ok_expr.value) print_ast(n->as.ok_expr.value, indent+1);
+            break;
+        case AST_ERR_EXPR:
+            printf("Err\n");
+            if (n->as.err_expr.value) print_ast(n->as.err_expr.value, indent+1);
+            break;
+        case AST_PIPE:
+            printf("Pipe\n");
+            print_ast(n->as.pipe.left, indent+1);
+            print_ast(n->as.pipe.right, indent+1);
+            break;
         case AST_DEFER: printf("Defer\n"); print_ast(n->as.defer_stmt.expr, indent+1); break;
-        case AST_WHEN: printf("When\n");
-            print_ast(n->as.when_expr.condition, indent+1); print_ast(n->as.when_expr.then_block, indent+1); break;
-        case AST_TUPLE: printf("Tuple(%d)\n", n->as.tuple.count);
-            for (int i = 0; i < n->as.tuple.count; i++) print_ast(n->as.tuple.elements[i], indent+1); break;
-        case AST_ARRAY_LITERAL: printf("ArrayLiteral(%d)\n", n->as.array_literal.count);
-            for (int i = 0; i < n->as.array_literal.count; i++) print_ast(n->as.array_literal.elements[i], indent+1); break;
-        case AST_INDEX: printf("Index\n");
-            print_ast(n->as.binary.left, indent+1); print_ast(n->as.binary.right, indent+1); break;
+        case AST_TUPLE:
+            printf("Tuple(%d)\n", n->as.tuple.count);
+            for (int i = 0; i < n->as.tuple.count; i++)
+                print_ast(n->as.tuple.elements[i], indent+1);
+            break;
+        case AST_ARRAY_LITERAL:
+            printf("ArrayLiteral(%d)\n", n->as.array_literal.count);
+            for (int i = 0; i < n->as.array_literal.count; i++)
+                print_ast(n->as.array_literal.elements[i], indent+1);
+            break;
+        case AST_INDEX:
+            printf("Index\n");
+            print_ast(n->as.binary.left, indent+1);
+            print_ast(n->as.binary.right, indent+1);
+            break;
         case AST_LEN_EXPR: printf("Len\n"); print_ast(n->as.len_expr.operand, indent+1); break;
+        case AST_RESULT_TYPE:
+            printf("ResultType\n");
+            print_ast(n->as.result_type.ok_type, indent+1);
+            print_ast(n->as.result_type.err_type, indent+1);
+            break;
         case AST_USING: printf("Using(\"%.*s\")\n", (int)n->as.using_decl.path_len, n->as.using_decl.path); break;
-        case AST_PROGRAM: printf("Program(%d)\n", n->as.program.count);
-            for (int i = 0; i < n->as.program.count; i++) print_ast(n->as.program.declarations[i], indent+1); break;
+        case AST_PROGRAM:
+            printf("Program(%d)\n", n->as.program.count);
+            for (int i = 0; i < n->as.program.count; i++)
+                print_ast(n->as.program.declarations[i], indent+1);
+            break;
         default: printf("Node(%d)\n", n->type); break;
     }
 }
@@ -97,10 +154,23 @@ static ast_node_t *parse_file(const char *path) {
 /* Merge source modules into the main program AST, renaming exported functions */
 static void merge_modules(ast_node_t *main_prog, ast_node_t *module, const char *module_name) {
     if (!module || module->type != AST_PROGRAM) return;
+
+    /* Skip merging for "std" module - its functions are in syscalls.asm */
+    if (strcmp(module_name, "std") == 0) {
+        /* Free the module AST since we don't need it */
+        for (int i = 0; i < module->as.program.count; i++) {
+            free_node(module->as.program.declarations[i]);
+        }
+        free(module->as.program.declarations);
+        free(module);
+        return;
+    }
+
     int name_len = strlen(module_name);
     for (int i = 0; i < module->as.program.count; i++) {
         ast_node_t *decl = module->as.program.declarations[i];
-        if (decl && decl->type == AST_FN_DECL && decl->as.fn_decl.is_export) {
+        if (!decl) continue;
+        if (decl->type == AST_FN_DECL && decl->as.fn_decl.is_export) {
             /* rename: add → module_add */
             char *new_name = malloc(name_len + 1 + decl->as.fn_decl.name_len + 1);
             memcpy(new_name, module_name, name_len);
@@ -110,14 +180,17 @@ static void merge_modules(ast_node_t *main_prog, ast_node_t *module, const char 
             free(decl->as.fn_decl.name);
             decl->as.fn_decl.name = new_name;
             decl->as.fn_decl.name_len = name_len + 1 + decl->as.fn_decl.name_len;
-            /* add to main program */
-            main_prog->as.program.count++;
-            main_prog->as.program.declarations = realloc(main_prog->as.program.declarations,
-                sizeof(void*) * main_prog->as.program.count);
-            main_prog->as.program.declarations[main_prog->as.program.count - 1] = decl;
-            module->as.program.declarations[i] = NULL;
         }
+        /* transfer all declarations to main program */
+        main_prog->as.program.count++;
+        main_prog->as.program.declarations = realloc(main_prog->as.program.declarations,
+            sizeof(void*) * main_prog->as.program.count);
+        main_prog->as.program.declarations[main_prog->as.program.count - 1] = decl;
+        module->as.program.declarations[i] = NULL;
     }
+    /* free the module shell (declarations are now owned by main_prog) */
+    free(module->as.program.declarations);
+    free(module);
 }
 
 /* Resolve using directives: find and parse imported modules */
@@ -157,7 +230,6 @@ static void resolve_modules(ast_node_t *prog, const char *base_dir) {
             char *dot = strrchr(mod_name, '.');
             if (dot) *dot = '\0';
             merge_modules(prog, mod_ast, mod_name);
-            /* leak mod_ast shell — declarations owned by main_prog */
         } else {
             fprintf(stderr, "Warning: could not import '%s'\n", paths[i]);
         }
@@ -165,12 +237,16 @@ static void resolve_modules(ast_node_t *prog, const char *base_dir) {
     }
     free(paths);
 
-    /* Phase 3: compact — remove USING entries */
+    /* Phase 3: compact — remove USING entries that were processed */
+    /* Keep USING entries so sem_analyze can set std_imported flag */
+    /* Only remove non-std USING entries (std is handled by merge_modules skip) */
     int dst = 0;
     for (int src = 0; src < prog->as.program.count; src++) {
         ast_node_t *d = prog->as.program.declarations[src];
         if (d && d->type != AST_USING)
             prog->as.program.declarations[dst++] = d;
+        else if (d && d->type == AST_USING)
+            prog->as.program.declarations[dst++] = d; /* keep USING for sem_analyze */
     }
     prog->as.program.count = dst;
 }
@@ -231,6 +307,7 @@ int main(int argc, char **argv) {
     }
 
     if (fold_only) {
+        sem_fold_constants(ast);
         printf("elc: %s — folded (%d decls)\n", input, ast->as.program.count);
         ast_free(ast); free(src); return 0;
     }

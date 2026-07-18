@@ -1,8 +1,11 @@
 # Build artifacts
 *.o
-examples/*.asm
 bin/
 lib/build/
+
+# Generated assembly (not lib/syscalls.asm)
+test/*.asm
+examples/*.asm
 
 # Editor
 *.swp
@@ -18,4 +21,6 @@ Thumbs.db
 # ELang compiled binaries
 *.out
 output.asm
+test/hello
+test/arrays
 .mimocode/

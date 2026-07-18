@@ -10,9 +10,32 @@ static int expect(parser_t *p, token_type_t t) {
     if (p->current.type == t) { advance(p); return 1; }
     fprintf(stderr, "Parse error at %d:%d: expected %s, got %s\n",
             p->current.line, p->current.col, token_type_name(t), token_type_name(p->current.type));
+    p->has_error = 1;
     return 0;
 }
 static char *tok_str(token_t *t) { char *s = malloc(t->length + 1); memcpy(s, t->value, t->length); s[t->length] = '\0'; return s; }
+
+/* parse a simple type identifier (i64, string, etc.) without expression parsing */
+static ast_node_t *parse_type_ident(parser_t *p) {
+    token_t t = p->current;
+    switch (t.type) {
+        case TOKEN_I8: case TOKEN_I16: case TOKEN_I32: case TOKEN_I64:
+        case TOKEN_U8: case TOKEN_U16: case TOKEN_U32: case TOKEN_U64:
+        case TOKEN_F32: case TOKEN_F64: case TOKEN_BOOL: case TOKEN_CHAR:
+        case TOKEN_STRING: case TOKEN_VOID: case TOKEN_NIL: case TOKEN_ERROR_TYPE:
+        case TOKEN_IDENT: {
+            ast_node_t *n = ast_new(AST_IDENT, t.line, t.col);
+            n->as.ident.name = tok_str(&t); n->as.ident.name_len = t.length;
+            advance(p);
+            return n;
+        }
+        default:
+            fprintf(stderr, "Parse error at %d:%d: expected type, got %s\n",
+                    t.line, t.col, token_type_name(t.type));
+            advance(p);
+            return ast_new(AST_IDENT, t.line, t.col);
+    }
+}
 
 static ast_node_t *parse_expr(parser_t *p);
 static ast_node_t *parse_stmt(parser_t *p);
@@ -20,23 +43,6 @@ static ast_node_t *parse_block(parser_t *p);
 static ast_node_t *parse_match(parser_t *p);
 
 static void skip_nl(parser_t *p) { while (p->current.type == TOKEN_NEWLINE) advance(p); }
-
-static ast_node_t *parse_when(parser_t *p) {
-    ast_node_t *n = ast_new(AST_WHEN, p->current.line, p->current.col);
-    advance(p); /* consume 'when' */
-    n->as.when_expr.condition = parse_expr(p);
-    skip_nl(p); n->as.when_expr.then_block = parse_block(p);
-    skip_nl(p);
-    if (match(p, TOKEN_ELSE)) {
-        skip_nl(p);
-        if (p->current.type == TOKEN_WHEN) {
-            n->as.when_expr.else_block = parse_when(p);
-        } else {
-            n->as.when_expr.else_block = parse_block(p);
-        }
-    }
-    return n;
-}
 
 static ast_node_t *parse_primary(parser_t *p) {
     token_t t = p->current;
@@ -156,7 +162,6 @@ static ast_node_t *parse_primary(parser_t *p) {
             return n;
         }
         case TOKEN_MATCH: return parse_match(p);
-        case TOKEN_WHEN: return parse_when(p);
         case TOKEN_PANIC: {
             ast_node_t *n = ast_new(AST_PANIC_EXPR, t.line, t.col);
             advance(p); expect(p, TOKEN_LPAREN);
@@ -358,7 +363,19 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
     if (match(p, TOKEN_ARROW)) {
         skip_nl(p);
         if (p->current.type != TOKEN_FAT_ARROW) {
-            n->as.fn_decl.return_type = parse_expr(p);
+            /* check for Result<T, E> */
+            if (p->current.type == TOKEN_RESULT) {
+                ast_node_t *n_result = ast_new(AST_RESULT_TYPE, p->current.line, p->current.col);
+                advance(p); /* consume Result */
+                expect(p, TOKEN_LT);
+                n_result->as.result_type.ok_type = parse_type_ident(p);
+                expect(p, TOKEN_COMMA);
+                n_result->as.result_type.err_type = parse_type_ident(p);
+                expect(p, TOKEN_GT);
+                n->as.fn_decl.return_type = n_result;
+            } else {
+                n->as.fn_decl.return_type = parse_expr(p);
+            }
         }
     }
     skip_nl(p);
@@ -422,7 +439,12 @@ static ast_node_t *parse_struct(parser_t *p) {
             sizeof(struct { char *name; size_t name_len; ast_node_t *type_expr; }) * n->as.struct_decl.field_count);
         int last = n->as.struct_decl.field_count - 1;
         n->as.struct_decl.fields[last].name = tok_str(&p->current); n->as.struct_decl.fields[last].name_len = p->current.length;
-        advance(p); n->as.struct_decl.fields[last].type_expr = match(p, TOKEN_COLON) ? (advance(p), NULL) : NULL;
+        advance(p);
+        if (match(p, TOKEN_COLON)) {
+            n->as.struct_decl.fields[last].type_expr = parse_expr(p);
+        } else {
+            n->as.struct_decl.fields[last].type_expr = NULL;
+        }
         skip_nl(p); match(p, TOKEN_COMMA); skip_nl(p);
     }
     expect(p, TOKEN_RBRACE); return n;
@@ -502,12 +524,13 @@ static ast_node_t *parse_stmt(parser_t *p) {
 
 void parser_init(parser_t *p, const char *source) {
     lexer_init(&p->lexer, source); p->current = lexer_next_token(&p->lexer); p->peek = lexer_next_token(&p->lexer);
+    p->has_error = 0;
 }
 
 ast_node_t *parser_parse(parser_t *p) {
     ast_node_t *prog = ast_new(AST_PROGRAM, 1, 1);
     prog->as.program.declarations = NULL; prog->as.program.count = 0;
-    while (p->current.type != TOKEN_EOF) {
+    while (p->current.type != TOKEN_EOF && !p->has_error) {
         skip_nl(p); if (p->current.type == TOKEN_EOF) break;
         ast_node_t *d = parse_stmt(p);
         if (d) { prog->as.program.count++;

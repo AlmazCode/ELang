@@ -31,7 +31,7 @@ static token_type_t check_keyword(const char *w, size_t len) {
         {"string",6,TOKEN_STRING},{"error",5,TOKEN_ERROR_TYPE},
         {"alloc",5,TOKEN_ALLOC},{"free",4,TOKEN_FREE},{"syscall",7,TOKEN_SYSCALL},
         {"panic",5,TOKEN_PANIC},{"catch",5,TOKEN_CATCH},{"assert",6,TOKEN_ASSERT},
-        {"Ok",2,TOKEN_OK},{"Err",3,TOKEN_ERR},
+        {"Ok",2,TOKEN_OK},{"Err",3,TOKEN_ERR},{"Result",6,TOKEN_RESULT},
         {"when",4,TOKEN_WHEN},{"defer",5,TOKEN_DEFER},{"using",5,TOKEN_USING},
     };
     for (size_t i = 0; i < sizeof(kw)/sizeof(kw[0]); i++)
@@ -130,10 +130,12 @@ char *read_file(const char *path) {
     if (!f) { fprintf(stderr, "Error: cannot open '%s'\n", path); return NULL; }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_SET);
     char *buf = malloc(sz + 1);
-    fread(buf, 1, sz, f);
-    buf[sz] = '\0';
+    if (!buf) { fclose(f); return NULL; }
+    size_t read = fread(buf, 1, sz, f);
+    buf[read] = '\0';
     fclose(f);
     return buf;
 }

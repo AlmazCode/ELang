@@ -27,8 +27,8 @@ fn main() -> void {
     print_str("\n")
 
     // Array in a loop
-    let sum = 0
-    let i = 0
+    let mut sum = 0
+    let mut i = 0
     while i < arr.len {
         sum = sum + arr[i]
         i = i + 1

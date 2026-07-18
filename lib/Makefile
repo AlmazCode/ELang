@@ -2,9 +2,15 @@
 ASM = nasm
 ASMFLAGS = -f elf64
 
-all: build/syscalls.o
+all: build/core.o build/std.o build/math.o
 
-build/syscalls.o: syscalls.asm | build
+build/core.o: core.asm | build
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+build/std.o: std.asm | build
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+build/math.o: math.asm | build
 	$(ASM) $(ASMFLAGS) $< -o $@
 
 build:
