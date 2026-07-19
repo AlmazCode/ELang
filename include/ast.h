@@ -20,6 +20,7 @@ typedef enum {
     AST_ARRAY_LITERAL, AST_LEN_EXPR,
     AST_CLOSURE,
     AST_RESULT_TYPE,
+    AST_IMPL_DECL,
 } ast_type_t;
 
 typedef struct ast_node ast_node_t;
@@ -41,7 +42,7 @@ struct ast_node {
         struct { ast_node_t *value; } ret;
         struct { ast_node_t *condition, *then_block, *else_block; } if_stmt;
         struct { ast_node_t *condition, *body; } while_stmt;
-        struct { char **vars; size_t *var_lens; int var_count; ast_node_t *iterable, *body; } for_stmt;
+        struct { char **vars; size_t *var_lens; int var_count; ast_node_t **var_types; ast_node_t *iterable, *body; } for_stmt;
         struct { ast_node_t **stmts; int count; } block;
         struct { char *name; size_t name_len; int is_mut; ast_node_t *type_expr, *value; } let;
         struct { ast_node_t *target, *value; } assign;
@@ -78,9 +79,12 @@ struct ast_node {
         struct { ast_node_t *condition, *message; } assert_expr; /* assert(cond, msg) */
         struct { ast_node_t **elements; int count; } array_literal;  /* [1, 2, 3] */
         struct { ast_node_t *operand; } len_expr;                    /* arr.len */
+        struct { ast_node_t *object; char *field; size_t field_len; } member; /* p.x */
         struct { char **params; size_t *param_lens; int param_count;
                  ast_node_t *body; char **captures; size_t *capture_lens; int capture_count; } closure; /* fn x => expr */
         struct { ast_node_t *ok_type; ast_node_t *err_type; } result_type; /* Result<T, E> */
+        struct { char *type_name; size_t type_name_len;
+            ast_node_t **methods; int method_count; } impl_decl; /* impl Type { fn ... } */
     } as;
 };
 

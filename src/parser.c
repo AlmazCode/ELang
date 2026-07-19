@@ -165,6 +165,23 @@ static ast_node_t *parse_primary(parser_t *p) {
             return n;
         }
         case TOKEN_MATCH: return parse_match(p);
+        case TOKEN_IF: {
+            /* if expression: if cond { val } else { val } or if cond { val } else expr */
+            ast_node_t *n = ast_new(AST_IF, t.line, t.col);
+            advance(p);
+            n->as.if_stmt.condition = parse_expr(p);
+            skip_nl(p);
+            n->as.if_stmt.then_block = parse_block(p);
+            skip_nl(p);
+            if (match(p, TOKEN_ELSE)) {
+                skip_nl(p);
+                if (p->current.type == TOKEN_IF)
+                    n->as.if_stmt.else_block = parse_primary(p);
+                else
+                    n->as.if_stmt.else_block = parse_block(p);
+            }
+            return n;
+        }
         case TOKEN_PANIC: {
             ast_node_t *n = ast_new(AST_PANIC_EXPR, t.line, t.col);
             advance(p); expect(p, TOKEN_LPAREN);
@@ -243,15 +260,55 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
         n->as.binary.op = TOKEN_LBRACKET;
         left = n;
     }
-    /* handle postfix .len */
+    /* handle postfix .field, .method(), and .len */
     while (left && p->current.type == TOKEN_DOT &&
-           p->peek.type == TOKEN_IDENT && p->peek.length == 3 &&
-           memcmp(p->peek.value, "len", 3) == 0) {
+           p->peek.type == TOKEN_IDENT) {
         advance(p); /* dot */
-        advance(p); /* len */
-        ast_node_t *n = ast_new(AST_LEN_EXPR, left->line, left->col);
-        n->as.len_expr.operand = left;
-        left = n;
+        if (p->current.length == 3 && memcmp(p->current.value, "len", 3) == 0 &&
+            p->peek.type != TOKEN_LPAREN) {
+            /* .len — array length */
+            advance(p);
+            ast_node_t *n = ast_new(AST_LEN_EXPR, left->line, left->col);
+            n->as.len_expr.operand = left;
+            left = n;
+        } else if (p->peek.type == TOKEN_LPAREN) {
+            /* .method(args) — method call: method(obj, args...) */
+            ast_node_t *method_name = ast_new(AST_IDENT, p->current.line, p->current.col);
+            method_name->as.ident.name = tok_str(&p->current);
+            method_name->as.ident.name_len = p->current.length;
+            advance(p); /* method name */
+            advance(p); /* ( */
+            /* Build arg list: [object, arg0, arg1, ...] */
+            ast_node_t *call = ast_new(AST_CALL, left->line, left->col);
+            call->as.call.callee = method_name;
+            call->as.call.args = NULL;
+            call->as.call.arg_count = 0;
+            /* first arg = the object (self) */
+            call->as.call.arg_count = 1;
+            call->as.call.args = malloc(sizeof(ast_node_t*));
+            call->as.call.args[0] = left;
+            /* parse remaining args */
+            while (p->current.type != TOKEN_RPAREN && p->current.type != TOKEN_EOF) {
+                if (call->as.call.arg_count > 1) expect(p, TOKEN_COMMA);
+                ast_node_t *arg = parse_expr(p);
+                if (arg) {
+                    call->as.call.arg_count++;
+                    call->as.call.args = realloc(call->as.call.args,
+                        sizeof(ast_node_t*) * call->as.call.arg_count);
+                    call->as.call.args[call->as.call.arg_count - 1] = arg;
+                }
+            }
+            expect(p, TOKEN_RPAREN);
+            left = call;
+        } else {
+            /* .field — member access */
+            ast_node_t *n = ast_new(AST_MEMBER, left->line, left->col);
+            n->as.member.object = left;
+            n->as.member.field = tok_str(&p->current);
+            n->as.member.field_len = p->current.length;
+            advance(p);
+            left = n;
+        }
     }
     while (1) {
         token_type_t op = p->current.type; int prec = 0;
@@ -331,7 +388,12 @@ static ast_node_t *parse_let(parser_t *p) {
         return n;
     }
     n->as.let.name = tok_str(&p->current); n->as.let.name_len = p->current.length; advance(p);
-    if (match(p, TOKEN_COLON)) n->as.let.type_expr = parse_binary(p, 0);
+    if (!match(p, TOKEN_COLON)) {
+        fprintf(stderr, "Parse error at %d:%d: expected ':' after variable name '%.*s'\n",
+            p->current.line, p->current.col, (int)n->as.let.name_len, n->as.let.name);
+        p->has_error = 1;
+    }
+    n->as.let.type_expr = parse_binary(p, 0);
     if (match(p, TOKEN_ASSIGN)) n->as.let.value = parse_expr(p);
     return n;
 }
@@ -356,28 +418,43 @@ static ast_node_t *parse_for(parser_t *p) {
     ast_node_t *n = ast_new(AST_FOR, p->current.line, p->current.col);
     advance(p); /* consume 'for' keyword */
 
-    /* parse variable names: "x" or "i, x" */
+    /* parse variable names with types: "x: i64" or "i: i64, x: i64" */
     n->as.for_stmt.vars = NULL;
     n->as.for_stmt.var_lens = NULL;
+    n->as.for_stmt.var_types = NULL;
     n->as.for_stmt.var_count = 0;
 
     /* parse first variable */
     n->as.for_stmt.var_count = 1;
     n->as.for_stmt.vars = malloc(sizeof(char*));
     n->as.for_stmt.var_lens = malloc(sizeof(size_t));
+    n->as.for_stmt.var_types = malloc(sizeof(ast_node_t*));
     n->as.for_stmt.vars[0] = tok_str(&p->current);
     n->as.for_stmt.var_lens[0] = p->current.length;
     advance(p);
+    if (!match(p, TOKEN_COLON)) {
+        fprintf(stderr, "Parse error at %d:%d: expected ':' after variable name\n",
+            p->current.line, p->current.col);
+        p->has_error = 1;
+    }
+    n->as.for_stmt.var_types[0] = parse_binary(p, 0);
 
-    /* optional second variable for enumerate: for i, x in arr */
+    /* optional second variable for enumerate: for i: i64, x: i64 in arr */
     if (p->current.type == TOKEN_COMMA) {
         advance(p);
         n->as.for_stmt.var_count = 2;
         n->as.for_stmt.vars = realloc(n->as.for_stmt.vars, sizeof(char*) * 2);
         n->as.for_stmt.var_lens = realloc(n->as.for_stmt.var_lens, sizeof(size_t) * 2);
+        n->as.for_stmt.var_types = realloc(n->as.for_stmt.var_types, sizeof(ast_node_t*) * 2);
         n->as.for_stmt.vars[1] = tok_str(&p->current);
         n->as.for_stmt.var_lens[1] = p->current.length;
         advance(p);
+        if (!match(p, TOKEN_COLON)) {
+            fprintf(stderr, "Parse error at %d:%d: expected ':' after variable name\n",
+                p->current.line, p->current.col);
+            p->has_error = 1;
+        }
+        n->as.for_stmt.var_types[1] = parse_binary(p, 0);
     }
 
     if (!expect(p, TOKEN_IN)) return n;
@@ -500,6 +577,28 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
         }
         n->as.fn_decl.body = body;
     }
+    /* Validate main: must have -> u8 return type */
+    if (n->as.fn_decl.name_len == 4 && memcmp(n->as.fn_decl.name, "main", 4) == 0) {
+        if (!n->as.fn_decl.return_type) {
+            fprintf(stderr, "Parse error at %d:%d: fn main must have a return type: fn main() -> u8\n",
+                n->line, n->col);
+            p->has_error = 1;
+        } else if (n->as.fn_decl.return_type->type == AST_IDENT) {
+            char rname[MAX_IDENT_LEN];
+            snprintf(rname, sizeof(rname), "%.*s",
+                (int)n->as.fn_decl.return_type->as.ident.name_len,
+                n->as.fn_decl.return_type->as.ident.name);
+            if (strcmp(rname, "u8") != 0) {
+                fprintf(stderr, "Parse error at %d:%d: fn main must return u8, not %s\n",
+                    n->line, n->col, rname);
+                p->has_error = 1;
+            }
+        } else {
+            fprintf(stderr, "Parse error at %d:%d: fn main must return u8\n",
+                n->line, n->col);
+            p->has_error = 1;
+        }
+    }
     return n;
 }
 
@@ -531,6 +630,77 @@ static ast_node_t *parse_import(parser_t *p) {
     ast_node_t *n = ast_new(AST_IMPORT_DECL, p->current.line, p->current.col);
     advance(p); n->as.import.path = tok_str(&p->current); n->as.import.path_len = p->current.length;
     advance(p); return n;
+}
+
+static ast_node_t *parse_enum(parser_t *p) {
+    ast_node_t *n = ast_new(AST_ENUM_DECL, p->current.line, p->current.col);
+    advance(p); /* consume 'enum' */
+    n->as.enum_decl.name = tok_str(&p->current); n->as.enum_decl.name_len = p->current.length;
+    advance(p);
+    expect(p, TOKEN_LBRACE);
+    n->as.enum_decl.variants = NULL; n->as.enum_decl.variant_count = 0;
+    skip_nl(p);
+    while (p->current.type != TOKEN_RBRACE && p->current.type != TOKEN_EOF) {
+        skip_nl(p);
+        if (p->current.type == TOKEN_RBRACE) break;
+        if (n->as.enum_decl.variant_count > 0) {
+            /* accept comma or newline as separator */
+            if (p->current.type == TOKEN_COMMA) advance(p);
+            skip_nl(p);
+        }
+        if (p->current.type == TOKEN_RBRACE) break;
+        /* parse variant: Name or Name(Type) or Name = value */
+        n->as.enum_decl.variant_count++;
+        n->as.enum_decl.variants = realloc(n->as.enum_decl.variants,
+            sizeof(struct { char *name; size_t name_len; ast_node_t *value; })
+            * n->as.enum_decl.variant_count);
+        int last = n->as.enum_decl.variant_count - 1;
+        n->as.enum_decl.variants[last].name = tok_str(&p->current);
+        n->as.enum_decl.variants[last].name_len = p->current.length;
+        advance(p);
+        n->as.enum_decl.variants[last].value = NULL;
+        if (match(p, TOKEN_LPAREN)) {
+            /* variant with data: Some(i64) */
+            n->as.enum_decl.variants[last].value = parse_type_ident(p);
+            expect(p, TOKEN_RPAREN);
+        } else if (match(p, TOKEN_ASSIGN)) {
+            /* manual ordinal: Jan = 1 */
+            n->as.enum_decl.variants[last].value = parse_expr(p);
+        }
+    }
+    expect(p, TOKEN_RBRACE);
+    return n;
+}
+
+static ast_node_t *parse_impl(parser_t *p) {
+    ast_node_t *n = ast_new(AST_IMPL_DECL, p->current.line, p->current.col);
+    advance(p); /* consume 'impl' */
+    n->as.impl_decl.type_name = tok_str(&p->current);
+    n->as.impl_decl.type_name_len = p->current.length;
+    advance(p);
+    expect(p, TOKEN_LBRACE);
+    n->as.impl_decl.methods = NULL; n->as.impl_decl.method_count = 0;
+    skip_nl(p);
+    while (p->current.type != TOKEN_RBRACE && p->current.type != TOKEN_EOF) {
+        skip_nl(p);
+        if (p->current.type == TOKEN_RBRACE) break;
+        if (p->current.type == TOKEN_FN) {
+            ast_node_t *method = parse_fn_decl(p);
+            if (method) {
+                n->as.impl_decl.method_count++;
+                n->as.impl_decl.methods = realloc(n->as.impl_decl.methods,
+                    sizeof(ast_node_t*) * n->as.impl_decl.method_count);
+                n->as.impl_decl.methods[n->as.impl_decl.method_count - 1] = method;
+            }
+        } else {
+            fprintf(stderr, "Parse error at %d:%d: expected 'fn' in impl block\n",
+                p->current.line, p->current.col);
+            p->has_error = 1;
+            break;
+        }
+    }
+    expect(p, TOKEN_RBRACE);
+    return n;
 }
 
 static ast_node_t *parse_export(parser_t *p) {
@@ -567,6 +737,8 @@ static ast_node_t *parse_stmt(parser_t *p) {
         case TOKEN_MATCH: return parse_match(p);
         case TOKEN_FN: return parse_fn_decl(p);
         case TOKEN_STRUCT: return parse_struct(p);
+        case TOKEN_ENUM: return parse_enum(p);
+        case TOKEN_IMPL: return parse_impl(p);
         case TOKEN_IMPORT: return parse_import(p);
         case TOKEN_EXPORT: return parse_export(p);
         case TOKEN_USING: {

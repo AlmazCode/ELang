@@ -2,12 +2,12 @@
 // Управление потоком — if/else if, while, for
 // ============================================
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Управление потоком ===\n\n")
 
     // --- if/else if/else ---
     print_str("--- if/else if ---\n")
-    let temp = 25
+    let temp: i64 = 25
 
     if temp > 30 {
         print_str("hot\n")
@@ -21,7 +21,7 @@ fn main() -> void {
 
     // --- while цикл ---
     print_str("\n--- while ---\n")
-    let mut i = 0
+    let mut i: i64 = 0
     while i < 5 {
         print_str("i = ")
         print_int(i)
@@ -31,7 +31,7 @@ fn main() -> void {
 
     // --- for цикл (диапазон) ---
     print_str("\n--- for (диапазон) ---\n")
-    for j in 0..5 {
+    for j: i64 in 0..5 {
         print_str("j = ")
         print_int(j)
         print_str("\n")
@@ -40,16 +40,17 @@ fn main() -> void {
     // --- for с => (однострочное тело) ---
     print_str("\n--- for с => ---\n")
     print_str("Квадраты: ")
-    for k in 0..5 => print_int(k * k)
+    for k: i64 in 0..5 => print_int(k * k)
     print_str("\n")
 
     // --- Вложенные циклы ---
     print_str("\n--- Таблица умножения (3x3) ---\n")
-    for a in 1..4 {
-        for b in 1..4 {
+    for a: i64 in 1..4 {
+        for b: i64 in 1..4 {
             print_int(a * b)
             print_str("  ")
         }
         print_str("\n")
     }
+    return 0
 }

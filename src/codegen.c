@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "codegen.h"
+#include "semantics.h"
 
 /* --- Frame layout constants --- */
 #define FRAME_REGS          5     /* callee-saved: rbx, r12, r13, r14, r15 */
@@ -13,12 +14,76 @@
 #define CLO_MIN_FRAME       56    /* minimum closure frame size */
 #define PUSH_RESERVE        64    /* extra stack space for push depth in emit_call */
 
+/* --- Capture detection --- */
+/* Collects all identifiers in AST that are NOT in the exclude list. */
+typedef struct {
+    char **names;
+    size_t *name_lens;
+    int count, cap;
+} ident_list_t;
+
+static void idlist_add(ident_list_t *l, const char *name, size_t len) {
+    for (int i = 0; i < l->count; i++)
+        if (l->name_lens[i] == len && memcmp(l->names[i], name, len) == 0) return;
+    if (l->count >= l->cap) { l->cap = l->cap ? l->cap * 2 : 8;
+        l->names = realloc(l->names, sizeof(char*) * l->cap);
+        l->name_lens = realloc(l->name_lens, sizeof(size_t) * l->cap); }
+    l->names[l->count] = strndup(name, len);
+    l->name_lens[l->count] = len;
+    l->count++;
+}
+
+static void collect_idents(ast_node_t *n, ident_list_t *out) {
+    if (!n) return;
+    switch (n->type) {
+        case AST_IDENT: idlist_add(out, n->as.ident.name, n->as.ident.name_len); break;
+        case AST_BINARY_OP: collect_idents(n->as.binary.left, out); collect_idents(n->as.binary.right, out); break;
+        case AST_UNARY_OP: collect_idents(n->as.unary.operand, out); break;
+        case AST_CALL: collect_idents(n->as.call.callee, out);
+            for (int i = 0; i < n->as.call.arg_count; i++) collect_idents(n->as.call.args[i], out);
+            break;
+        case AST_PIPE: collect_idents(n->as.pipe.left, out); collect_idents(n->as.pipe.right, out); break;
+        case AST_IF: collect_idents(n->as.if_stmt.condition, out); collect_idents(n->as.if_stmt.then_block, out);
+            collect_idents(n->as.if_stmt.else_block, out); break;
+        case AST_WHILE: collect_idents(n->as.while_stmt.condition, out); collect_idents(n->as.while_stmt.body, out); break;
+        case AST_FOR: collect_idents(n->as.for_stmt.iterable, out); collect_idents(n->as.for_stmt.body, out); break;
+        case AST_BLOCK: for (int i = 0; i < n->as.block.count; i++) collect_idents(n->as.block.stmts[i], out); break;
+        case AST_LET: collect_idents(n->as.let.value, out); break;
+        case AST_ASSIGN: collect_idents(n->as.assign.target, out); collect_idents(n->as.assign.value, out); break;
+        case AST_RETURN: collect_idents(n->as.ret.value, out); break;
+        case AST_MATCH: collect_idents(n->as.match_expr.value, out);
+            for (int i = 0; i < n->as.match_expr.case_count; i++) {
+                collect_idents(n->as.match_expr.cases[i].pattern, out);
+                collect_idents(n->as.match_expr.cases[i].result, out); } break;
+        case AST_DEFER: collect_idents(n->as.defer_stmt.expr, out); break;
+        case AST_TRY_EXPR: collect_idents(n->as.try_expr.operand, out); break;
+        case AST_CATCH_EXPR: collect_idents(n->as.catch_expr.operand, out); collect_idents(n->as.catch_expr.handler, out); break;
+        case AST_PANIC_EXPR: collect_idents(n->as.panic_expr.message, out); break;
+        case AST_ASSERT_EXPR: collect_idents(n->as.assert_expr.condition, out); collect_idents(n->as.assert_expr.message, out); break;
+        case AST_TUPLE: for (int i = 0; i < n->as.tuple.count; i++) collect_idents(n->as.tuple.elements[i], out); break;
+        case AST_ARRAY_LITERAL: for (int i = 0; i < n->as.array_literal.count; i++) collect_idents(n->as.array_literal.elements[i], out); break;
+        case AST_INDEX: collect_idents(n->as.binary.left, out); collect_idents(n->as.binary.right, out); break;
+        case AST_LEN_EXPR: collect_idents(n->as.len_expr.operand, out); break;
+        case AST_OK_EXPR: collect_idents(n->as.ok_expr.value, out); break;
+        case AST_ERR_EXPR: collect_idents(n->as.err_expr.value, out); break;
+        case AST_CLOSURE: collect_idents(n->as.closure.body, out); break;
+        default: break;
+    }
+}
+
+/* Codegen error — prints message and sets error flag */
+static void codegen_error(codegen_t *cg, const char *fmt, ...) {
+    fprintf(stderr, "codegen error: ");
+    va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a);
+    fprintf(stderr, "\n");
+    cg->has_error = 1;
+    cg->error_count++;
+}
+
 /* Check snprintf result for truncation */
-static void buf_check(int written, size_t bufsize, const char *context) {
+static void buf_check(codegen_t *cg, int written, size_t bufsize, const char *context) {
     if (written < 0 || (size_t)written >= bufsize) {
-        fprintf(stderr, "codegen error: identifier too long (%s), max %zu chars\n",
-                context, bufsize - 1);
-        exit(1);
+        codegen_error(cg, "identifier too long (%s), max %zu chars", context, bufsize - 1);
     }
 }
 
@@ -130,10 +195,28 @@ static int is_user_defined(codegen_t *cg, const char *name, size_t len) {
     if (!cg->prog || cg->prog->type != AST_PROGRAM) return 0;
     for (int i = 0; i < cg->prog->as.program.count; i++) {
         ast_node_t *d = cg->prog->as.program.declarations[i];
-        if (d && d->type == AST_FN_DECL &&
+        if (!d) continue;
+        if (d->type == AST_FN_DECL &&
             d->as.fn_decl.name_len == len &&
             memcmp(d->as.fn_decl.name, name, len) == 0)
             return 1;
+        if (d->type == AST_STRUCT_DECL &&
+            d->as.struct_decl.name_len == len &&
+            memcmp(d->as.struct_decl.name, name, len) == 0)
+            return 1;
+        if (d->type == AST_IMPL_DECL) {
+            for (int mi = 0; mi < d->as.impl_decl.method_count; mi++) {
+                ast_node_t *method = d->as.impl_decl.methods[mi];
+                if (method->type != AST_FN_DECL) continue;
+                /* Build prefixed name: Type_method */
+                char prefixed[MAX_IDENT_LEN];
+                int plen = snprintf(prefixed, sizeof(prefixed), "%.*s_%.*s",
+                    (int)d->as.impl_decl.type_name_len, d->as.impl_decl.type_name,
+                    (int)method->as.fn_decl.name_len, method->as.fn_decl.name);
+                if (plen == (int)len && memcmp(prefixed, name, len) == 0)
+                    return 1;
+            }
+        }
     }
     return 0;
 }
@@ -170,18 +253,18 @@ static void emit_call_target(codegen_t *cg, ast_node_t *callee) {
         ast_node_t *mod = callee->as.binary.left;
         ast_node_t *fn = callee->as.binary.right;
         char mod_name[MAX_IDENT_LEN];
-        buf_check(snprintf(mod_name, sizeof(mod_name), "%.*s",
+        buf_check(cg, snprintf(mod_name, sizeof(mod_name), "%.*s",
             (int)mod->as.ident.name_len, mod->as.ident.name),
             sizeof(mod_name), "module name");
         if (strcmp(mod_name, "std") == 0) {
             char fn_name[MAX_IDENT_LEN];
-            buf_check(snprintf(fn_name, sizeof(fn_name), "%.*s",
+            buf_check(cg, snprintf(fn_name, sizeof(fn_name), "%.*s",
                 (int)fn->as.ident.name_len, fn->as.ident.name),
                 sizeof(fn_name), "function name");
             emit_call_name(cg, fn_name, strlen(fn_name));
         } else {
             char ext_name[MAX_EXTNAME_LEN];
-            buf_check(snprintf(ext_name, sizeof(ext_name), "%.*s_%.*s",
+            buf_check(cg, snprintf(ext_name, sizeof(ext_name), "%.*s_%.*s",
                 (int)mod->as.ident.name_len, mod->as.ident.name,
                 (int)fn->as.ident.name_len, fn->as.ident.name),
                 sizeof(ext_name), "module::function name");
@@ -192,7 +275,7 @@ static void emit_call_target(codegen_t *cg, ast_node_t *callee) {
         }
     } else {
         char fn_name[MAX_IDENT_LEN];
-        buf_check(snprintf(fn_name, sizeof(fn_name), "%.*s",
+        buf_check(cg, snprintf(fn_name, sizeof(fn_name), "%.*s",
             (int)callee->as.ident.name_len,
             callee->as.ident.name),
             sizeof(fn_name), "function name");
@@ -266,6 +349,49 @@ static void emit_call(codegen_t *cg, ast_node_t *callee, ast_node_t **args, int 
     if (cleanup) emit(cg, "add rsp, %d", cleanup);
 }
 
+/* Emit a closure call: load [fn_ptr, env_ptr] from closure object on stack.
+ * clo_stack_off = stack offset where closure object [fn_ptr:8][env_ptr:8] lives.
+ * rdi = env_ptr, rsi = arg0, rdx = arg1, ... (closure calling convention). */
+static void emit_closure_call(codegen_t *cg, int clo_stack_off, ast_node_t **args, int narg) {
+    const char *regs[] = {"rsi","rdx","rcx","r8","r9"};
+    int reg_count = narg < 5 ? narg : 5;
+    int stack_args = narg > 5 ? narg - 5 : 0;
+    FILE *real_output = cg->output;
+
+    /* Save rbx (twice for alignment) */
+    emit(cg, "push rbx");
+    emit(cg, "push rbx");
+
+    /* Load closure object: fn_ptr → r10, env_ptr → rdi */
+    emit(cg, "mov rax, [rbp-%d]", clo_stack_off);
+    emit(cg, "mov r10, [rax]");     /* fn_ptr → r10 (preserved across gen_expr) */
+    emit(cg, "mov rdi, [rax+8]");   /* env_ptr → rdi */
+
+    /* Evaluate args: arg0→r11 spill, arg1→rbx, arg2+→regs */
+    if (reg_count > 0) { gen_expr(cg, args[0]); cg->output = real_output; emit(cg, "push rax"); }
+    if (reg_count > 1) { gen_expr(cg, args[1]); cg->output = real_output; emit(cg, "mov rbx, rax"); }
+    for (int i = 2; i < reg_count; i++) {
+        gen_expr(cg, args[i]); cg->output = real_output;
+        emit(cg, "mov %s, rax", regs[i]);
+    }
+    if (reg_count > 0) { emit(cg, "pop rax"); emit(cg, "mov rsi, rax"); }
+    if (reg_count > 1) emit(cg, "mov rdx, rbx");
+
+    /* Restore rbx */
+    emit(cg, "pop rbx");
+    emit(cg, "pop rbx");
+
+    /* Align rsp to 16 bytes */
+    int total = cg->stack_size + 8 * stack_args + 16;
+    int align = (16 - (total % 16)) % 16;
+    if (align) emit(cg, "sub rsp, %d", align);
+
+    emit(cg, "call r10");
+
+    int cleanup = align + 8 * stack_args;
+    if (cleanup) emit(cg, "add rsp, %d", cleanup);
+}
+
 /* --- Defer support --- */
 static void push_defer(codegen_t *cg, ast_node_t *expr) {
     if (cg->defer_count >= cg->defer_cap) {
@@ -289,7 +415,7 @@ static void emit_defers(codegen_t *cg, int from_depth) {
 }
 
 static void gen_expr(codegen_t *cg, ast_node_t *n) {
-    if (!n) return;
+    if (!n || cg->has_error) return;
     switch (n->type) {
         case AST_INT_LIT: emit(cg, "mov rax, %ld", n->as.int_val); break;
         case AST_BOOL_LIT: emit(cg, "mov rax, %d", n->as.bool_val ? 1 : 0); break;
@@ -307,7 +433,7 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
                  * This ensures the function follows the closure calling convention:
                  * rdi=env_ptr (NULL), rsi=arg0, rdx=arg1, ... */
                 char fn_name[MAX_IDENT_LEN];
-                buf_check(snprintf(fn_name, sizeof(fn_name), "%.*s",
+                buf_check(cg, snprintf(fn_name, sizeof(fn_name), "%.*s",
                     (int)n->as.ident.name_len, n->as.ident.name),
                     sizeof(fn_name), "function name");
                 /* Allocate closure object inline (16 bytes) */
@@ -317,12 +443,49 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
                 emit(cg, "mov qword [rbp-%d + 8], 0", clo_off); /* env_ptr = NULL */
                 emit(cg, "lea rax, [rbp-%d]", clo_off);     /* return ptr to closure object */
             } else {
-                fprintf(stderr, "codegen: undefined '%.*s'\n",
+                codegen_error(cg, "undefined '%.*s'",
                     (int)n->as.ident.name_len, n->as.ident.name);
                 return;
             }
             break; }
         case AST_BINARY_OP:
+            /* Check for enum literal: Color::Red */
+            if (n->as.binary.op == TOKEN_COLONCOLON &&
+                n->as.binary.left->type == AST_IDENT) {
+                char enum_name[MAX_IDENT_LEN];
+                buf_check(cg, snprintf(enum_name, sizeof(enum_name), "%.*s",
+                    (int)n->as.binary.left->as.ident.name_len,
+                    n->as.binary.left->as.ident.name),
+                    sizeof(enum_name), "enum name");
+                /* Find variant index */
+                int tag = -1;
+                for (int ei = 0; ei < cg->prog->as.program.count; ei++) {
+                    ast_node_t *d = cg->prog->as.program.declarations[ei];
+                    if (d && d->type == AST_ENUM_DECL &&
+                        d->as.enum_decl.name_len == strlen(enum_name) &&
+                        memcmp(d->as.enum_decl.name, enum_name,
+                            d->as.enum_decl.name_len) == 0) {
+                        for (int vi = 0; vi < d->as.enum_decl.variant_count; vi++) {
+                            if (d->as.enum_decl.variants[vi].name_len ==
+                                    n->as.binary.right->as.ident.name_len &&
+                                memcmp(d->as.enum_decl.variants[vi].name,
+                                    n->as.binary.right->as.ident.name,
+                                    d->as.enum_decl.variants[vi].name_len) == 0) {
+                                tag = vi; break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (tag >= 0) {
+                    emit(cg, "mov rax, %d", tag);
+                } else {
+                    codegen_error(cg, "unknown enum variant '%.*s'",
+                        (int)n->as.binary.right->as.ident.name_len,
+                        n->as.binary.right->as.ident.name);
+                }
+                break;
+            }
             gen_expr(cg, n->as.binary.left); emit(cg, "push rax");
             gen_expr(cg, n->as.binary.right);
             /* Use stack slot instead of rbx (rbx is callee-saved, can't use as scratch) */
@@ -350,7 +513,101 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             int is_user = (n->as.call.callee->type == AST_IDENT &&
                 is_user_defined(cg, n->as.call.callee->as.ident.name,
                     n->as.call.callee->as.ident.name_len));
-            emit_call(cg, n->as.call.callee, n->as.call.args, n->as.call.arg_count, is_user);
+            int is_struct = 0;
+            if (is_user && n->as.call.callee->type == AST_IDENT) {
+                for (int i = 0; i < cg->prog->as.program.count; i++) {
+                    ast_node_t *d = cg->prog->as.program.declarations[i];
+                    if (d && d->type == AST_STRUCT_DECL &&
+                        d->as.struct_decl.name_len == n->as.call.callee->as.ident.name_len &&
+                        memcmp(d->as.struct_decl.name, n->as.call.callee->as.ident.name,
+                            d->as.struct_decl.name_len) == 0) {
+                        is_struct = 1; break;
+                    }
+                }
+            }
+            /* Check if this is an enum auto method (c.tag(), c.name()) */
+            int is_enum_method = 0;
+            char enum_method_name[MAX_IDENT_LEN] = {0};
+            if (!is_user && !is_struct && n->as.call.callee->type == AST_IDENT &&
+                n->as.call.arg_count > 0 && n->as.call.args[0]->type == AST_IDENT) {
+                for (int vi = 0; vi < cg->var_type_count; vi++) {
+                    if (strlen(cg->var_types[vi].name) == n->as.call.args[0]->as.ident.name_len &&
+                        memcmp(cg->var_types[vi].name, n->as.call.args[0]->as.ident.name,
+                            n->as.call.args[0]->as.ident.name_len) == 0) {
+                        char *type_name = cg->var_types[vi].struct_name;
+                        char method_name[32] = {0};
+                        int mlen = (int)n->as.call.callee->as.ident.name_len;
+                        if (mlen < 32) {
+                            memcpy(method_name, n->as.call.callee->as.ident.name, mlen);
+                            method_name[mlen] = '\0';
+                        }
+                        if (strcmp(method_name, "tag") == 0 ||
+                            strcmp(method_name, "name") == 0 ||
+                            strcmp(method_name, "count") == 0) {
+                            for (int ei = 0; ei < cg->prog->as.program.count; ei++) {
+                                ast_node_t *d = cg->prog->as.program.declarations[ei];
+                                if (d && d->type == AST_ENUM_DECL &&
+                                    d->as.enum_decl.name_len == strlen(type_name) &&
+                                    memcmp(d->as.enum_decl.name, type_name,
+                                        d->as.enum_decl.name_len) == 0) {
+                                    snprintf(enum_method_name, sizeof(enum_method_name),
+                                        "%s_%s", type_name, method_name);
+                                    is_enum_method = 1;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            /* Check if this is a struct method call (first arg is struct type) */
+            int is_method = 0;
+            char method_type[MAX_IDENT_LEN] = {0};
+            if (!is_user && !is_struct && !is_enum_method && n->as.call.callee->type == AST_IDENT &&
+                n->as.call.arg_count > 0 && n->as.call.args[0]->type == AST_IDENT) {
+                for (int vi = 0; vi < cg->var_type_count; vi++) {
+                    if (strlen(cg->var_types[vi].name) == n->as.call.args[0]->as.ident.name_len &&
+                        memcmp(cg->var_types[vi].name, n->as.call.args[0]->as.ident.name,
+                            n->as.call.args[0]->as.ident.name_len) == 0) {
+                        snprintf(method_type, sizeof(method_type), "%s_%.*s",
+                            cg->var_types[vi].struct_name,
+                            (int)n->as.call.callee->as.ident.name_len,
+                            n->as.call.callee->as.ident.name);
+                        if (is_user_defined(cg, method_type, strlen(method_type)))
+                            is_method = 1;
+                        break;
+                    }
+                }
+            }
+            /* Dispatch */
+            if (is_enum_method) {
+                ast_node_t temp = {.type = AST_IDENT,
+                    .as.ident.name = enum_method_name,
+                    .as.ident.name_len = strlen(enum_method_name)};
+                emit_call(cg, &temp, n->as.call.args, n->as.call.arg_count, 0);
+            } else if (is_method) {
+                ast_node_t method_ident = *n->as.call.callee;
+                method_ident.as.ident.name = method_type;
+                method_ident.as.ident.name_len = strlen(method_type);
+                ast_node_t *saved_callee = n->as.call.callee;
+                n->as.call.callee = &method_ident;
+                emit_call(cg, n->as.call.callee, n->as.call.args, n->as.call.arg_count, 1);
+                n->as.call.callee = saved_callee;
+            } else if (is_struct) {
+                emit_call(cg, n->as.call.callee, n->as.call.args, n->as.call.arg_count, 0);
+            } else if (is_user) {
+                emit_call(cg, n->as.call.callee, n->as.call.args, n->as.call.arg_count, 1);
+            } else if (n->as.call.callee->type == AST_IDENT) {
+                int clo_off = find_sym(cg, n->as.call.callee->as.ident.name);
+                if (clo_off >= 0) {
+                    emit_closure_call(cg, clo_off, n->as.call.args, n->as.call.arg_count);
+                } else {
+                    emit_call(cg, n->as.call.callee, n->as.call.args, n->as.call.arg_count, 0);
+                }
+            } else {
+                emit_call(cg, n->as.call.callee, n->as.call.args, n->as.call.arg_count, 0);
+            }
             break; }
         case AST_PIPE: {
             /* x |> f(a)  =>  f(x, a) — left goes as first arg */
@@ -367,7 +624,7 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             } else {
                 /* x |> f  =>  f(x) */
                 if (callee->type != AST_IDENT) {
-                    fprintf(stderr, "codegen error: |> right side must be a function call or identifier\n");
+                    codegen_error(cg, "|> right side must be a function call or identifier");
                     break;
                 }
                 ast_node_t *single_arg = n->as.pipe.left;
@@ -423,6 +680,49 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             fprintf(cg->output, "    call len\n");
             /* rax = length */
             break; }
+        case AST_MEMBER: {
+            /* p.x — field access */
+            gen_expr(cg, n->as.member.object); /* rax = object pointer */
+            /* Find struct name from var_types table */
+            char *struct_name = NULL;
+            if (n->as.member.object->type == AST_IDENT) {
+                for (int vi = 0; vi < cg->var_type_count; vi++) {
+                    if (strlen(cg->var_types[vi].name) == n->as.member.object->as.ident.name_len &&
+                        memcmp(cg->var_types[vi].name, n->as.member.object->as.ident.name,
+                            n->as.member.object->as.ident.name_len) == 0) {
+                        struct_name = cg->var_types[vi].struct_name;
+                        break;
+                    }
+                }
+            }
+            /* Find field offset */
+            int field_offset = -1;
+            if (struct_name) {
+                for (int si = 0; si < cg->prog->as.program.count; si++) {
+                    ast_node_t *d = cg->prog->as.program.declarations[si];
+                    if (d && d->type == AST_STRUCT_DECL &&
+                        d->as.struct_decl.name_len == strlen(struct_name) &&
+                        memcmp(d->as.struct_decl.name, struct_name,
+                            d->as.struct_decl.name_len) == 0) {
+                        for (int fi = 0; fi < d->as.struct_decl.field_count; fi++) {
+                            if (d->as.struct_decl.fields[fi].name_len == n->as.member.field_len &&
+                                memcmp(d->as.struct_decl.fields[fi].name, n->as.member.field,
+                                    n->as.member.field_len) == 0) {
+                                field_offset = fi * 8;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if (field_offset < 0) {
+                codegen_error(cg, "unknown field '%.*s'",
+                    (int)n->as.member.field_len, n->as.member.field);
+                break;
+            }
+            emit(cg, "mov rax, [rax + %d]", field_offset);
+            break; }
         case AST_TRY_EXPR: {
             /* expr? — check if result is Err (bit 0 == 1), if so propagate (return) */
             gen_expr(cg, n->as.try_expr.operand);
@@ -464,16 +764,76 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             /* fn x => expr — buffered closure body + closure object */
             int clo_label = new_label(cg);
 
-            /* Buffer closure body using open_memstream */
+            /* --- Detect captures --- */
+            ident_list_t all_idents = {0};
+            collect_idents(n->as.closure.body, &all_idents);
+
+            /* Filter: keep only idents that exist in outer scope AND are not params */
+            int capture_count = 0;
+            char **capture_names = NULL;
+            int *capture_offsets = NULL; /* stack offset of each captured var in outer scope */
+
+            for (int ci = 0; ci < all_idents.count; ci++) {
+                /* Skip closure params */
+                int is_param = 0;
+                for (int pi = 0; pi < n->as.closure.param_count; pi++)
+                    if (n->as.closure.param_lens[pi] == all_idents.name_lens[ci] &&
+                        memcmp(n->as.closure.params[pi], all_idents.names[ci], all_idents.name_lens[ci]) == 0)
+                        { is_param = 1; break; }
+                if (is_param) { free(all_idents.names[ci]); all_idents.names[ci] = NULL; continue; }
+
+                /* Check if exists in outer scope */
+                int off = find_sym(cg, all_idents.names[ci]);
+                if (off < 0) { free(all_idents.names[ci]); all_idents.names[ci] = NULL; continue; }
+
+                /* It's a capture — deduplicate */
+                int dup = 0;
+                for (int di = 0; di < capture_count; di++)
+                    if (strlen(capture_names[di]) == all_idents.name_lens[ci] &&
+                        memcmp(capture_names[di], all_idents.names[ci], all_idents.name_lens[ci]) == 0)
+                        { dup = 1; break; }
+                if (dup) { free(all_idents.names[ci]); all_idents.names[ci] = NULL; continue; }
+
+                capture_names = realloc(capture_names, sizeof(char*) * (capture_count + 1));
+                capture_offsets = realloc(capture_offsets, sizeof(int) * (capture_count + 1));
+                capture_names[capture_count] = all_idents.names[ci]; /* take ownership */
+                capture_offsets[capture_count] = off;
+                all_idents.names[ci] = NULL; /* ownership transferred */
+                capture_count++;
+            }
+            free(all_idents.name_lens);
+            /* free remaining unowned names */
+            for (int ci = 0; ci < all_idents.count; ci++)
+                if (all_idents.names[ci]) free(all_idents.names[ci]);
+            free(all_idents.names);
+
+            /* --- Build env struct on heap (caller side) --- */
+            int env_slot = -1;
+            if (capture_count > 0) {
+                /* with_capacity(8, capture_count) → rax = env_ptr */
+                emit(cg, "mov rdi, 8");
+                emit(cg, "mov rsi, %d", capture_count);
+                add_extern(cg, "with_capacity");
+                fprintf(cg->output, "    call with_capacity\n");
+                env_slot = add_sym(cg, "__env", 8);
+                emit(cg, "mov [rbp-%d], rax", env_slot);
+                for (int ci = 0; ci < capture_count; ci++) {
+                    emit(cg, "mov rdi, [rbp-%d]", env_slot);
+                    emit(cg, "mov rax, [rbp-%d]", capture_offsets[ci]);
+                    emit(cg, "mov rsi, rax");
+                    add_extern(cg, "push");
+                    fprintf(cg->output, "    call push\n");
+                    emit(cg, "mov [rbp-%d], rax", env_slot);
+                }
+            }
+
+            /* --- Buffer closure body --- */
             FILE *saved_output = cg->output;
             char *buf = NULL;
             size_t buf_len = 0;
             FILE *mem = open_memstream(&buf, &buf_len);
             cg->output = mem;
 
-            /* Save stack state — closure codegen modifies stack_size via add_sym
-             * for its parameters. We must restore after so caller's temp slots
-             * don't collide with closure's local variables. */
             int saved_stack = cg->stack_size;
             int saved_max = cg->max_stack_size;
 
@@ -481,27 +841,47 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             emit(cg, "push rbp"); emit(cg, "mov rbp, rsp");
             emit(cg, "push rbx"); emit(cg, "push r12"); emit(cg, "push r13"); emit(cg, "push r14"); emit(cg, "push r15");
             const char *cr[] = {"rdi","rsi","rdx","rcx","r8","r9"};
-            /* Store args as symbols — stack_size accounts for them */
-            int clo_param_count = n->as.closure.param_count < 5 ? n->as.closure.param_count : 5;
             cg->stack_size = FRAME_HEADER;
+
+            /* Save env_ptr into a stack slot before it's overwritten by args */
+            int clo_env_slot = -1;
+            if (capture_count > 0) {
+                clo_env_slot = add_sym(cg, "__clo_env", 8);
+                emit(cg, "mov [rbp-%d], rdi", clo_env_slot);
+            }
+
+            /* Store args as symbols */
+            int clo_param_count = n->as.closure.param_count < 5 ? n->as.closure.param_count : 5;
             for (int ai = 0; ai < clo_param_count; ai++) {
                 int poff = add_sym(cg, n->as.closure.params[ai], 8);
                 emit(cg, "mov [rbp-%d], %s", poff, cr[ai + 1]);
             }
-            /* Allocate stack: need enough so params don't collide with caller's saved regs.
-             * Closure's rbp points into caller's frame. Params at [rbp-X] must be in
-             * closure's OWN stack space, not overlapping caller's saved registers.
-             * Minimum: 40 (our saved regs) + params + body space + 48 (safety margin). */
-            int clo_stack_needed = cg->stack_size;
-            if (clo_stack_needed < CLO_MIN_FRAME) clo_stack_needed = CLO_MIN_FRAME;
-            emit(cg, "sub rsp, %d", clo_stack_needed - 40);
+
+            /* Load captures from env_ptr into local stack slots */
+            for (int ci = 0; ci < capture_count; ci++) {
+                int coff = add_sym(cg, capture_names[ci], 8);
+                emit(cg, "mov rax, [rbp-%d]", clo_env_slot);
+                emit(cg, "mov rax, [rax + %d]", ci * 8);
+                emit(cg, "mov [rbp-%d], rax", coff);
+            }
+
+            /* Placeholder sub rsp — patched after body is generated */
+            long clo_sub_rsp_pos = ftell(cg->output);
+            fprintf(cg->output, "    sub rsp, 0x00000000\n");
             gen_expr(cg, n->as.closure.body);
+            /* Patch sub rsp with actual size needed */
+            int clo_stack_needed = cg->max_stack_size;
+            if (clo_stack_needed < CLO_MIN_FRAME + FRAME_HEADER) clo_stack_needed = CLO_MIN_FRAME + FRAME_HEADER;
+            long clo_cur_pos = ftell(cg->output);
+            fseek(cg->output, clo_sub_rsp_pos, SEEK_SET);
+            fprintf(cg->output, "    sub rsp, 0x%08X", (unsigned)(clo_stack_needed - FRAME_HEADER));
+            fseek(cg->output, clo_cur_pos, SEEK_SET);
             emit(cg, "mov rsp, rbp"); emit(cg, "pop rbp"); emit(cg, "ret");
 
             fclose(mem);
             cg->output = saved_output;
 
-            /* Restore caller's stack state (closure's add_sym calls were in buffer) */
+            /* Restore caller's stack state */
             cg->stack_size = saved_stack;
             cg->max_stack_size = saved_max;
 
@@ -516,12 +896,21 @@ static void gen_expr(codegen_t *cg, ast_node_t *n) {
             cg->closure_bodies[cg->closure_body_count].asm_len = buf_len;
             cg->closure_body_count++;
 
-            /* Create closure object: [fn_ptr, env_ptr=NULL] */
+            /* Create closure object: [fn_ptr, env_ptr] */
             int clo_off = add_sym(cg, "__clo", 16);
             emit(cg, "lea rax, [_fn%d]", clo_label);
             emit(cg, "mov [rbp-%d], rax", clo_off);
-            emit(cg, "mov qword [rbp-%d + 8], 0", clo_off);
+            if (env_slot >= 0)
+                emit(cg, "mov rax, [rbp-%d]", env_slot);
+            else
+                emit(cg, "xor rax, rax");
+            emit(cg, "mov [rbp-%d + 8], rax", clo_off);
             emit(cg, "lea rax, [rbp-%d]", clo_off);
+
+            /* Cleanup capture names */
+            for (int ci = 0; ci < capture_count; ci++) free(capture_names[ci]);
+            free(capture_names);
+            free(capture_offsets);
             break; }
         default: break;
     }
@@ -675,7 +1064,23 @@ static void gen_fn_decl(codegen_t *cg, ast_node_t *n) {
     const char *aregs[] = {"rsi","rdx","rcx","r8","r9","r10"};
     for (int i = 0; i < n->as.fn_decl.param_count && i < 6; i++) {
         int off = add_sym(cg, n->as.fn_decl.params[i].name, 8);
-        emit(cg, "mov [rbp-%d], %s", off, aregs[i]); }
+        emit(cg, "mov [rbp-%d], %s", off, aregs[i]);
+        /* Track parameter struct type for dot access (e.g., self: Point) */
+        if (n->as.fn_decl.params[i].type_expr &&
+            n->as.fn_decl.params[i].type_expr->type == AST_IDENT) {
+            if (cg->var_type_count >= cg->var_type_cap) {
+                cg->var_type_cap = cg->var_type_cap ? cg->var_type_cap * 2 : 8;
+                cg->var_types = realloc(cg->var_types,
+                    sizeof(*cg->var_types) * cg->var_type_cap);
+            }
+            cg->var_types[cg->var_type_count].name = strndup(
+                n->as.fn_decl.params[i].name, n->as.fn_decl.params[i].name_len);
+            cg->var_types[cg->var_type_count].struct_name = strndup(
+                n->as.fn_decl.params[i].type_expr->as.ident.name,
+                n->as.fn_decl.params[i].type_expr->as.ident.name_len);
+            cg->var_type_count++;
+        }
+    }
     cg->returned = 0;
     cg->scope_depth = 0;
     int saved_defer_count = cg->defer_count;
@@ -699,23 +1104,44 @@ static void gen_fn_decl(codegen_t *cg, ast_node_t *n) {
 
 static void gen_struct_decl(codegen_t *cg, ast_node_t *n) {
     fprintf(cg->output, "\n; struct %.*s\n", (int)n->as.struct_decl.name_len, n->as.struct_decl.name);
-    fprintf(cg->output, "global struct_"); emit_name(cg, n->as.struct_decl.name, n->as.struct_decl.name_len);
-    fprintf(cg->output, "\nstruct_"); emit_name(cg, n->as.struct_decl.name, n->as.struct_decl.name_len);
+    /* Constructor name: _<Name> — callable as Point(1, 2) */
+    fprintf(cg->output, "global ");
+    emit_name(cg, n->as.struct_decl.name, n->as.struct_decl.name_len);
+    fprintf(cg->output, "\n");
+    emit_name(cg, n->as.struct_decl.name, n->as.struct_decl.name_len);
     fprintf(cg->output, ":\n");
     emit(cg, "push rbp"); emit(cg, "mov rbp, rsp");
-    int total = 8 + n->as.struct_decl.field_count * 8;
-    int aligned_total = (total + 15) & ~15;
-    emit(cg, "sub rsp, %d", aligned_total);
-    emit(cg, "mov qword [rbp-8], %d", n->as.struct_decl.field_count);
+
+    /* Save field values from registers to stack before allocation */
+    int field_count = n->as.struct_decl.field_count;
     const char *regs[] = {"rdi","rsi","rdx","rcx","r8","r9"};
-    for (int i = 0; i < n->as.struct_decl.field_count && i < 6; i++)
-        emit(cg, "mov [rbp-%d], %s", 16 + i * 8, regs[i]);
-    emit(cg, "lea rax, [rbp-8]");
+    for (int i = 0; i < field_count && i < 6; i++)
+        emit(cg, "push %s", regs[i]);
+
+    /* Heap allocation: 16 (header) + field_count * 8 (fields) */
+    emit(cg, "mov rdi, %d", 16 + field_count * 8);
+    add_extern(cg, "_bump_alloc");
+    fprintf(cg->output, "    call _bump_alloc\n");
+    /* rax = ptr to allocated block */
+
+    /* Store header at start of block */
+    emit(cg, "mov qword [rax], 1");         /* refcount = 1 */
+    emit(cg, "mov qword [rax+8], %d", field_count);
+
+    /* Pop field values and store after header */
+    for (int i = field_count - 1; i >= 0; i--) {
+        emit(cg, "pop rbx");
+        emit(cg, "mov [rax + %d], rbx", 16 + i * 8);
+    }
+
+    /* Return pointer to data (after header) */
+    emit(cg, "add rax, 16");
+
     emit(cg, "mov rsp, rbp"); emit(cg, "pop rbp"); emit(cg, "ret");
 }
 
 static void gen_stmt(codegen_t *cg, ast_node_t *n) {
-    if (!n) return;
+    if (!n || cg->has_error) return;
     if (n->type == AST_FN_DECL) { cg->returned = 0; cg->scope_depth = 0; cg->defer_count = 0; }
     if (cg->returned) return;
     switch (n->type) {
@@ -732,11 +1158,48 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
                 int off = add_sym(cg, n->as.let.name, 8);
                 if (n->as.let.value) { gen_expr(cg, n->as.let.value); emit(cg, "mov [rbp-%d], rax", off); }
                 else emit(cg, "mov qword [rbp-%d], 0", off);
+                /* Track struct/enum type for dot access */
+                if (n->as.let.type_expr && n->as.let.type_expr->type == AST_IDENT) {
+                    if (cg->var_type_count >= cg->var_type_cap) {
+                        cg->var_type_cap = cg->var_type_cap ? cg->var_type_cap * 2 : 8;
+                        cg->var_types = realloc(cg->var_types,
+                            sizeof(*cg->var_types) * cg->var_type_cap);
+                    }
+                    cg->var_types[cg->var_type_count].name = strdup(n->as.let.name);
+                    /* If value is an enum literal, use enum type instead of annotation */
+                    if (n->as.let.value && n->as.let.value->type == AST_BINARY_OP &&
+                        n->as.let.value->as.binary.op == TOKEN_COLONCOLON &&
+                        n->as.let.value->as.binary.left->type == AST_IDENT) {
+                        cg->var_types[cg->var_type_count].struct_name = strndup(
+                            n->as.let.value->as.binary.left->as.ident.name,
+                            n->as.let.value->as.binary.left->as.ident.name_len);
+                    } else {
+                        cg->var_types[cg->var_type_count].struct_name = strndup(
+                            n->as.let.type_expr->as.ident.name,
+                            n->as.let.type_expr->as.ident.name_len);
+                    }
+                    cg->var_type_count++;
+                }
+                /* Also track enum type if value is an enum literal */
+                else if (n->as.let.value && n->as.let.value->type == AST_BINARY_OP &&
+                    n->as.let.value->as.binary.op == TOKEN_COLONCOLON &&
+                    n->as.let.value->as.binary.left->type == AST_IDENT) {
+                    if (cg->var_type_count >= cg->var_type_cap) {
+                        cg->var_type_cap = cg->var_type_cap ? cg->var_type_cap * 2 : 8;
+                        cg->var_types = realloc(cg->var_types,
+                            sizeof(*cg->var_types) * cg->var_type_cap);
+                    }
+                    cg->var_types[cg->var_type_count].name = strdup(n->as.let.name);
+                    cg->var_types[cg->var_type_count].struct_name = strndup(
+                        n->as.let.value->as.binary.left->as.ident.name,
+                        n->as.let.value->as.binary.left->as.ident.name_len);
+                    cg->var_type_count++;
+                }
             }
             break; }
         case AST_ASSIGN: {
             int off = find_sym(cg, n->as.assign.target->as.ident.name);
-            if (off < 0) { fprintf(stderr, "codegen: undefined '%.*s'\n",
+            if (off < 0) { codegen_error(cg, "undefined '%.*s'",
                 (int)n->as.assign.target->as.ident.name_len, n->as.assign.target->as.ident.name); return; }
             gen_expr(cg, n->as.assign.value); emit(cg, "mov [rbp-%d], rax", off); break; }
         case AST_RETURN:
@@ -758,8 +1221,108 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
         case AST_BLOCK: gen_block(cg, n); break;
         case AST_FN_DECL: gen_fn_decl(cg, n); break;
         case AST_STRUCT_DECL: gen_struct_decl(cg, n); break;
-        case AST_ENUM_DECL:
-            fprintf(cg->output, "; enum %.*s\n", (int)n->as.enum_decl.name_len, n->as.enum_decl.name); break;
+        case AST_IMPL_DECL: {
+            /* impl Type { fn method() {} } — generate methods with type prefix */
+            char type_name[MAX_IDENT_LEN];
+            buf_check(cg, snprintf(type_name, sizeof(type_name), "%.*s",
+                (int)n->as.impl_decl.type_name_len, n->as.impl_decl.type_name),
+                sizeof(type_name), "impl type name");
+            for (int mi = 0; mi < n->as.impl_decl.method_count; mi++) {
+                ast_node_t *method = n->as.impl_decl.methods[mi];
+                if (method->type != AST_FN_DECL) continue;
+                /* Generate method with prefix: _Type_method */
+                fprintf(cg->output, "\n; %s::", type_name);
+                fprintf(cg->output, "%.*s\n", (int)method->as.fn_decl.name_len, method->as.fn_decl.name);
+                fprintf(cg->output, "global ");
+                emit_name(cg, type_name, strlen(type_name));
+                fprintf(cg->output, "_");
+                fprintf(cg->output, "%.*s", (int)method->as.fn_decl.name_len, method->as.fn_decl.name);
+                fprintf(cg->output, "\n");
+                emit_name(cg, type_name, strlen(type_name));
+                fprintf(cg->output, "_");
+                fprintf(cg->output, "%.*s:\n", (int)method->as.fn_decl.name_len, method->as.fn_decl.name);
+                /* Copy method body with modified name */
+                ast_node_t saved = *method;
+                char *old_name = method->as.fn_decl.name;
+                size_t old_len = method->as.fn_decl.name_len;
+                char new_name[MAX_IDENT_LEN];
+                snprintf(new_name, sizeof(new_name), "%s_%.*s", type_name,
+                    (int)old_len, old_name);
+                method->as.fn_decl.name = strdup(new_name);
+                method->as.fn_decl.name_len = strlen(new_name);
+                gen_fn_decl(cg, method);
+                free(method->as.fn_decl.name);
+                method->as.fn_decl.name = old_name;
+                method->as.fn_decl.name_len = old_len;
+            }
+            break;
+        }
+        case AST_ENUM_DECL: {
+            /* Generate enum: constants, name table, auto methods */
+            int count = n->as.enum_decl.variant_count;
+            char enum_name[MAX_IDENT_LEN];
+            buf_check(cg, snprintf(enum_name, sizeof(enum_name), "%.*s",
+                (int)n->as.enum_decl.name_len, n->as.enum_decl.name),
+                sizeof(enum_name), "enum name");
+
+            /* Emit name table in .data */
+            fprintf(cg->output, "; enum %.*s — %d variants\n",
+                (int)n->as.enum_decl.name_len, n->as.enum_decl.name, count);
+
+            /* Collect variant names for string data */
+            for (int i = 0; i < count; i++) {
+                int vlen = (int)n->as.enum_decl.variants[i].name_len;
+                fprintf(cg->output, "  _enum_%s_name_%d: db ", enum_name, i);
+                for (int c = 0; c < vlen; c++)
+                    fprintf(cg->output, "0x%02X, ", (unsigned char)n->as.enum_decl.variants[i].name[c]);
+                fprintf(cg->output, "0\n");
+            }
+
+            /* Name pointer table */
+            fprintf(cg->output, "  _enum_%s_names: dq ", enum_name);
+            for (int i = 0; i < count; i++)
+                fprintf(cg->output, "_enum_%s_name_%d, ", enum_name, i);
+            fprintf(cg->output, "0\n");
+
+            /* tag(self) -> tag value */
+            fprintf(cg->output, "global %s_tag\n", enum_name);
+            fprintf(cg->output, "%s_tag:\n", enum_name);
+            emit(cg, "mov rax, rdi");
+            emit(cg, "ret");
+
+            /* name(self) -> string name */
+            fprintf(cg->output, "global %s_name\n", enum_name);
+            fprintf(cg->output, "%s_name:\n", enum_name);
+            emit(cg, "lea rax, [_enum_%s_names]", enum_name);
+            emit(cg, "mov rax, [rax + rdi*8]");
+            emit(cg, "ret");
+
+            /* count() -> variant count */
+            fprintf(cg->output, "global %s_count\n", enum_name);
+            fprintf(cg->output, "%s_count:\n", enum_name);
+            emit(cg, "mov rax, %d", count);
+            emit(cg, "ret");
+
+            /* Register enum functions as extern for linker */
+            char fn_name[MAX_IDENT_LEN];
+            snprintf(fn_name, sizeof(fn_name), "%s_tag", enum_name);
+            add_extern(cg, fn_name);
+            snprintf(fn_name, sizeof(fn_name), "%s_name", enum_name);
+            add_extern(cg, fn_name);
+            snprintf(fn_name, sizeof(fn_name), "%s_count", enum_name);
+            add_extern(cg, fn_name);
+
+            /* Register enum variants as constants in symbol table */
+            for (int i = 0; i < count; i++) {
+                /* Add to extern_names so they're callable */
+                char variant_name[MAX_IDENT_LEN];
+                snprintf(variant_name, sizeof(variant_name), "%.*s",
+                    (int)n->as.enum_decl.variants[i].name_len,
+                    n->as.enum_decl.variants[i].name);
+                add_extern(cg, variant_name);
+            }
+            break;
+        }
         case AST_MATCH: {
             int end_lbl = new_label(cg), ret_lbl = new_label(cg);
             scope_mark_t match_mark = scope_enter(cg);
@@ -901,7 +1464,7 @@ static void gen_stmt(codegen_t *cg, ast_node_t *n) {
 }
 
 static void gen_node(codegen_t *cg, ast_node_t *n) {
-    if (!n) return;
+    if (!n || cg->has_error) return;
     switch (n->type) {
         case AST_PROGRAM: for (int i = 0; i < n->as.program.count; i++) gen_node(cg, n->as.program.declarations[i]); break;
         default: gen_stmt(cg, n); break;
@@ -965,6 +1528,8 @@ void codegen_init(codegen_t *cg, FILE *output) {
     cg->defers = NULL; cg->defer_count = 0; cg->defer_cap = 0; cg->scope_depth = 0;
     cg->extern_names = NULL; cg->extern_count = 0; cg->in_return_expr = 0;
     cg->sub_rsp_pos = 0; cg->source_file = NULL; cg->prog = NULL;
+    cg->has_error = 0; cg->error_count = 0;
+    cg->var_types = NULL; cg->var_type_count = 0; cg->var_type_cap = 0;
     cg->closure_bodies = NULL; cg->closure_body_count = 0; cg->closure_body_cap = 0;
 }
 
@@ -976,6 +1541,11 @@ void codegen_free(codegen_t *cg) {
     free(cg->defers);
     for (int i = 0; i < cg->extern_count; i++) free(cg->extern_names[i]);
     free(cg->extern_names);
+    for (int i = 0; i < cg->var_type_count; i++) {
+        free(cg->var_types[i].name);
+        free(cg->var_types[i].struct_name);
+    }
+    free(cg->var_types);
 }
 
 static void add_extern(codegen_t *cg, const char *name) {
@@ -987,7 +1557,7 @@ static void add_extern(codegen_t *cg, const char *name) {
 int codegen_program(codegen_t *cg, ast_node_t *prog) {
     cg->prog = prog;
     collect_strings(cg, prog);
-    emit_raw(cg, "; Generated by ELang compiler v0.42.0");
+    emit_raw(cg, "; Generated by ELang compiler v0.43.0");
 
     /* Collect all function calls for extern declarations */
     /* This is done during codegen, so we emit externs after gen_node */
@@ -1025,32 +1595,10 @@ int codegen_program(codegen_t *cg, ast_node_t *prog) {
         emit_raw(cg, "global _start"); emit_raw(cg, "");
         emit_raw(cg, "_start:");
         emit_raw(cg, "    call _main");
-        /* Check if main returned an unhandled Result (Err tag: bit 0 == 1) */
-        emit_raw(cg, "    mov rbx, rax");
-        emit_raw(cg, "    and rbx, 1");
-        emit_raw(cg, "    cmp rbx, 1");
-        int ok_label = new_label(cg);
-        emit(cg, "jne L%d", ok_label);
-        /* Err case: print "error: unhandled Result\n" to stderr, exit(1) */
-        emit_raw(cg, "    ; unhandled Err from main — print to stderr");
-        emit_raw(cg, "    mov rax, 1");          /* sys_write */
-        emit_raw(cg, "    mov rdi, 2");          /* stderr */
-        fprintf(cg->output, "    lea rsi, [_err_unhandled_msg]\n");
-        emit_raw(cg, "    mov rdx, 32");         /* strlen("error: unhandled Result in main\n") */
-        emit_raw(cg, "    syscall");
-        emit_raw(cg, "    mov rdi, 1");
-        emit_raw(cg, "    mov rax, 60");
-        emit_raw(cg, "    syscall");
-        /* Ok case: extract value and exit normally */
-        fprintf(cg->output, "L%d:\n", ok_label);
-        emit_raw(cg, "    shr rax, 1");
+        /* main returns u8 — use directly as exit code */
         emit_raw(cg, "    mov rdi, rax");
         emit_raw(cg, "    mov rax, 60");
         emit_raw(cg, "    syscall");
-        /* Error message string */
-        emit_raw(cg, "section .data");
-        fprintf(cg->output, "  _err_unhandled_msg: db \"error: unhandled Result in main\", 0x0A, 0\n");
-        emit_raw(cg, "section .text");
     }
-    return 0;
+    return cg->has_error ? 1 : 0;
 }

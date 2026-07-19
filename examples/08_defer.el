@@ -3,7 +3,7 @@
 // ============================================
 // defer выполняется при выходе из scope в обратном порядке
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Defer ===\n\n")
 
     // --- Базовый defer ---
@@ -24,9 +24,10 @@ fn main() -> void {
 
     // --- Defer в цикле ---
     print_str("--- Defer в цикле ---\n")
-    for i in 0..3 {
+    for i: i64 in 0..3 {
         print_str("Iteration ")
         print_int(i)
         print_str("\n")
     }
+    return 0
 }

@@ -28,7 +28,7 @@ enum Direction {
     West
 }
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Структуры и перечисления ===\n\n")
 
     print_str("Структуры и перечисления объявлены.\n")
@@ -37,4 +37,5 @@ fn main() -> void {
     print_str("Примеры объявлений:\n")
     print_str("  struct Point { x: f64 y: f64 }\n")
     print_str("  enum Color { Red Green Blue }\n")
+    return 0
 }

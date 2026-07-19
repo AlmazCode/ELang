@@ -11,12 +11,12 @@ fn swap_pair(a: i64, b: i64) -> (i64, i64) {
     (b, a)
 }
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Tuples ===\n\n")
 
     // --- Создание кортежа ---
     print_str("--- Создание ---\n")
-    let pair = (10, 20)
+    let pair: (i64, i64) = (10, 20)
     print_str("(10, 20)\n")
 
     // --- Деструктуризация ---
@@ -39,11 +39,12 @@ fn main() -> void {
 
     // --- Кортеж в переменной ---
     print_str("\n--- Кортеж в переменной ---\n")
-    let point = (100, 200)
+    let point: (i64, i64) = (100, 200)
     let (px, py) = point
     print_str("point = (")
     print_int(px)
     print_str(", ")
     print_int(py)
     print_str(")\n")
+    return 0
 }

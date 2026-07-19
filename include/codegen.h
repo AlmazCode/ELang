@@ -33,6 +33,10 @@ typedef struct {
     long sub_rsp_pos;   /* file offset of sub rsp placeholder for patching */
     const char *source_file; /* source filename for panic location */
     ast_node_t *prog;   /* AST root for function lookup */
+    int has_error;      /* set on codegen error, checked before continuing */
+    int error_count;    /* total errors seen */
+    struct { char *name; char *struct_name; } *var_types; /* variable → struct type */
+    int var_type_count, var_type_cap;
     /* Closure body buffer: bodies emitted after main code */
     struct { int label; char *asm_text; size_t asm_len; } *closure_bodies;
     int closure_body_count, closure_body_cap;

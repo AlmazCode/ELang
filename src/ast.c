@@ -31,6 +31,7 @@ void free_node(ast_node_t *n) {
         case AST_ARRAY_LITERAL: for (int i = 0; i < n->as.array_literal.count; i++) free_node(n->as.array_literal.elements[i]);
             free(n->as.array_literal.elements); break;
         case AST_LEN_EXPR: free_node(n->as.len_expr.operand); break;
+        case AST_MEMBER: free_node(n->as.member.object); free(n->as.member.field); break;
         case AST_CALL: free_node(n->as.call.callee);
             for (int i = 0; i < n->as.call.arg_count; i++) free_node(n->as.call.args[i]);
             free(n->as.call.args); break;
@@ -38,8 +39,11 @@ void free_node(ast_node_t *n) {
         case AST_IF: free_node(n->as.if_stmt.condition); free_node(n->as.if_stmt.then_block);
             free_node(n->as.if_stmt.else_block); break;
         case AST_WHILE: free_node(n->as.while_stmt.condition); free_node(n->as.while_stmt.body); break;
-        case AST_FOR: for (int fi = 0; fi < n->as.for_stmt.var_count; fi++) free(n->as.for_stmt.vars[fi]);
+        case AST_FOR: for (int fi = 0; fi < n->as.for_stmt.var_count; fi++) {
+                free(n->as.for_stmt.vars[fi]);
+                free_node(n->as.for_stmt.var_types[fi]); }
             free(n->as.for_stmt.vars); free(n->as.for_stmt.var_lens);
+            free(n->as.for_stmt.var_types);
             free_node(n->as.for_stmt.iterable);
             free_node(n->as.for_stmt.body); break;
         case AST_BLOCK: for (int i = 0; i < n->as.block.count; i++) free_node(n->as.block.stmts[i]);
@@ -71,6 +75,9 @@ void free_node(ast_node_t *n) {
         case AST_OK_EXPR: free_node(n->as.ok_expr.value); break;
         case AST_ERR_EXPR: free_node(n->as.err_expr.value); break;
         case AST_RESULT_TYPE: free_node(n->as.result_type.ok_type); free_node(n->as.result_type.err_type); break;
+        case AST_IMPL_DECL: free(n->as.impl_decl.type_name);
+            for (int mi = 0; mi < n->as.impl_decl.method_count; mi++) free_node(n->as.impl_decl.methods[mi]);
+            free(n->as.impl_decl.methods); break;
         case AST_CLOSURE: for (int ci = 0; ci < n->as.closure.param_count; ci++) free(n->as.closure.params[ci]);
             free(n->as.closure.params); free(n->as.closure.param_lens);
             free_node(n->as.closure.body);

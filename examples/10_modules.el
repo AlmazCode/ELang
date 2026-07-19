@@ -7,7 +7,7 @@
 // --- Импорт модуля ---
 using "math"
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Модули ===\n\n")
 
     // --- Вызов функций из модуля ---
@@ -45,4 +45,5 @@ fn main() -> void {
     print_str("5 |> math::abs_val() = ")
     (-5) |> math::abs_val() |> print_int()
     print_str("\n")
+    return 0
 }

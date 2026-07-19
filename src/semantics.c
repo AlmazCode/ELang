@@ -72,7 +72,11 @@ int type_equal(type_info_t *a, type_info_t *b) {
     if (!a || !b) return a == b;
     /* TYPE_UNKNOWN matches any type (wildcard) */
     if (a->kind == TYPE_UNKNOWN || b->kind == TYPE_UNKNOWN) return 1;
-    if (a->kind != b->kind) return 0;
+    if (a->kind != b->kind) {
+        /* Allow integer coercion: any int type is compatible with any other int type */
+        if (type_is_integer(a) && type_is_integer(b)) return 1;
+        return 0;
+    }
     switch (a->kind) {
         case TYPE_POINTER: return type_equal(a->base, b->base);
         case TYPE_ARRAY:
@@ -88,6 +92,14 @@ int type_equal(type_info_t *a, type_info_t *b) {
             if (!type_equal(a->result.ok_type, b->result.ok_type)) return 0;
             if (!type_equal(a->result.err_type, b->result.err_type)) return 0;
             return 1;
+        case TYPE_ENUM:
+            /* Enum types are equal if they have the same name */
+            if (!a->struct_name || !b->struct_name) return 0;
+            return strcmp(a->struct_name, b->struct_name) == 0;
+        case TYPE_STRUCT:
+            /* Struct types are equal if they have the same name */
+            if (!a->struct_name || !b->struct_name) return 0;
+            return strcmp(a->struct_name, b->struct_name) == 0;
         default: return 1;
     }
 }
@@ -297,7 +309,12 @@ type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
             if (strcmp(name, "f32") == 0) return type_new(TYPE_F32);
             if (strcmp(name, "f64") == 0) return type_new(TYPE_F64);
             if (strcmp(name, "string") == 0) return type_new(TYPE_STRING);
-            /* struct/enum types */
+            /* struct/enum types — check scope for registered types */
+            symbol_t *sym = scope_find(ctx->current_scope, name);
+            if (sym && sym->type && (sym->type->kind == TYPE_STRUCT || sym->type->kind == TYPE_ENUM)) {
+                return type_copy(sym->type);
+            }
+            /* unknown type — create as struct for now */
             type_info_t *t = type_new(TYPE_STRUCT);
             t->struct_name = strdup(name);
             return t;
@@ -342,6 +359,20 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
         }
 
         case AST_BINARY_OP: {
+            /* Check for enum literal: Color::Red */
+            if (node->as.binary.op == TOKEN_COLONCOLON &&
+                node->as.binary.left->type == AST_IDENT) {
+                char enum_name[MAX_IDENT_LEN];
+                snprintf(enum_name, sizeof(enum_name), "%.*s",
+                    (int)node->as.binary.left->as.ident.name_len,
+                    node->as.binary.left->as.ident.name);
+                /* Look up enum type in scope */
+                symbol_t *sym = scope_find(ctx->current_scope, enum_name);
+                if (sym && sym->type && sym->type->kind == TYPE_ENUM) {
+                    return type_copy(sym->type);
+                }
+                return type_new(TYPE_I64); /* fallback */
+            }
             type_info_t *left = sem_infer_expr(ctx, node->as.binary.left);
             type_info_t *right = sem_infer_expr(ctx, node->as.binary.right);
             if (!left || !right) return type_new(TYPE_UNKNOWN);
@@ -415,7 +446,13 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
                                    val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN));
         }
 
-        case AST_MATCH: return sem_infer_expr(ctx, node->as.match_expr.value);
+        case AST_MATCH: {
+            /* Match expression returns the type of the case bodies */
+            if (node->as.match_expr.case_count > 0) {
+                return sem_infer_expr(ctx, node->as.match_expr.cases[0].result);
+            }
+            return type_new(TYPE_UNKNOWN);
+        }
         case AST_PIPE: {
             if (node->as.pipe.right->type == AST_CALL)
                 return sem_infer_expr(ctx, node->as.pipe.right);
@@ -425,7 +462,10 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
         case AST_TRY_EXPR: {
             /* expr? — returns the inner Ok type */
             type_info_t *inner = sem_infer_expr(ctx, node->as.try_expr.operand);
-            /* for now, just return the inner type */
+            if (inner && inner->kind == TYPE_RESULT) {
+                /* Unwrap Result<T, E> → T */
+                return inner->result.ok_type ? type_copy(inner->result.ok_type) : type_new(TYPE_UNKNOWN);
+            }
             return inner ? type_copy(inner) : type_new(TYPE_UNKNOWN);
         }
 
@@ -799,8 +839,35 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             sem_fold_constants(node->as.assert_expr.condition);
             sem_fold_constants(node->as.assert_expr.message);
             break;
-        case AST_STRUCT_DECL:
-        case AST_ENUM_DECL:
+        case AST_STRUCT_DECL: {
+            /* Register struct fields in type system */
+            type_info_t *t = type_new(TYPE_STRUCT);
+            t->struct_name = strndup(node->as.struct_decl.name, node->as.struct_decl.name_len);
+            t->fields.count = node->as.struct_decl.field_count;
+            t->fields.names = malloc(sizeof(char*) * t->fields.count);
+            t->fields.offsets = malloc(sizeof(int) * t->fields.count);
+            t->fields.types = malloc(sizeof(type_info_t*) * t->fields.count);
+            for (int i = 0; i < t->fields.count; i++) {
+                t->fields.names[i] = strndup(
+                    node->as.struct_decl.fields[i].name,
+                    node->as.struct_decl.fields[i].name_len);
+                t->fields.offsets[i] = i * 8;  /* each field is 8 bytes */
+                t->fields.types[i] = node->as.struct_decl.fields[i].type_expr
+                    ? sem_resolve_type(ctx, node->as.struct_decl.fields[i].type_expr)
+                    : type_new(TYPE_UNKNOWN);
+            }
+            /* Register in scope */
+            scope_add(ctx->current_scope, t->struct_name, t, 0);
+            break;
+        }
+        case AST_ENUM_DECL: {
+            /* Register enum type in type system */
+            type_info_t *t = type_new(TYPE_ENUM);
+            t->struct_name = strndup(node->as.enum_decl.name, node->as.enum_decl.name_len);
+            /* Register in scope */
+            scope_add(ctx->current_scope, t->struct_name, t, 0);
+            break;
+        }
         case AST_IMPORT_DECL:
         case AST_USING: {
             /* check if this is "std" module */

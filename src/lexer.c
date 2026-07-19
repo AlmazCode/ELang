@@ -22,7 +22,7 @@ static token_type_t check_keyword(const char *w, size_t len) {
         {"while",5,TOKEN_WHILE},{"for",3,TOKEN_FOR},{"in",2,TOKEN_IN},{"loop",4,TOKEN_LOOP},
         {"break",5,TOKEN_BREAK},{"continue",8,TOKEN_CONTINUE},{"match",5,TOKEN_MATCH},
         {"let",3,TOKEN_LET},{"mut",3,TOKEN_MUT},{"const",5,TOKEN_CONST},
-        {"struct",6,TOKEN_STRUCT},{"enum",4,TOKEN_ENUM},{"import",6,TOKEN_IMPORT},
+        {"struct",6,TOKEN_STRUCT},{"enum",4,TOKEN_ENUM},{"impl",4,TOKEN_IMPL},{"import",6,TOKEN_IMPORT},
         {"export",6,TOKEN_EXPORT},{"as",2,TOKEN_AS},{"true",4,TOKEN_TRUE},{"false",5,TOKEN_FALSE},
         {"nil",3,TOKEN_NIL},{"type",4,TOKEN_TYPE},{"void",4,TOKEN_VOID},
         {"i8",2,TOKEN_I8},{"i16",3,TOKEN_I16},{"i32",3,TOKEN_I32},{"i64",3,TOKEN_I64},

@@ -31,6 +31,12 @@ struct type_info {
         type_info_t *err_type;     /* Result<T, E> — E */
     } result;
     char *struct_name;             /* for named struct/enum types */
+    struct {                       /* struct field registry */
+        char **names;
+        int *offsets;              /* byte offset from data start */
+        type_info_t **types;
+        int count;
+    } fields;
 };
 
 type_info_t *type_new(type_kind_t kind);

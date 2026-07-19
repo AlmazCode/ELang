@@ -2,7 +2,7 @@
 // Выражения — всё возвращает значение
 // ============================================
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Выражения ===\n\n")
 
     // --- Функции возвращают значение ---
@@ -37,11 +37,12 @@ fn main() -> void {
 
     // --- Условные выражения ---
     print_str("\n--- Условные выражения ---\n")
-    let x = 42
-    let category = classify(x)
+    let x: i64 = 42
+    let category: string = classify(x)
     print_str("classify(42) = ")
     print_str(category)
     print_str("\n")
+    return 0
 }
 
 fn add(a: i64, b: i64) -> i64 { a + b }

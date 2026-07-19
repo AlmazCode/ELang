@@ -8,7 +8,7 @@
 #include "ast.h"
 #include "semantics.h"
 
-#define VERSION "0.42.0"
+#define VERSION "0.43.0"
 
 static void usage(const char *p) {
     printf("ELang Compiler v%s\n", VERSION);
@@ -320,7 +320,9 @@ int main(int argc, char **argv) {
     FILE *out = fopen(output, "w");
     if (!out) { fprintf(stderr, "Cannot open '%s'\n", output); ast_free(ast); free(src); return 1; }
     codegen_t cg; codegen_init(&cg, out); cg.is_main = !is_lib; cg.source_file = input;
-    codegen_program(&cg, ast); codegen_free(&cg); fclose(out);
+    int cg_err = codegen_program(&cg, ast);
+    codegen_free(&cg); fclose(out);
+    if (cg_err) { fprintf(stderr, "elc: codegen failed for %s\n", input); ast_free(ast); free(src); return 1; }
     printf("elc: %s -> %s (%d decls)\n", input, output, ast->as.program.count);
     ast_free(ast); free(src); return 0;
 }

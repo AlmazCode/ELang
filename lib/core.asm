@@ -335,6 +335,7 @@ section .text
 
 ; _bump_alloc(size) -> ptr using brk syscall. Never frees.
 ; NOTE: syscall clobbers rcx and r11, so we save aligned base on stack.
+global _bump_alloc
 _bump_alloc:
     push rbx
     mov rbx, rdi            ; save size
@@ -705,7 +706,7 @@ filter:
     push r13
     push r14
     push r15
-    sub rsp, 16             ; two temp slots: [rbp-48]=new_ptr, [rbp-56]=result_count
+    sub rsp, 24             ; three slots: [rbp-48]=new_ptr, [rbp-56]=result_count, [rbp-64]=i
     mov rbx, rdi            ; array_ptr
     mov r12, rsi            ; closure_ptr
     mov r13, [rbx - 8]     ; length
@@ -717,8 +718,9 @@ filter:
     call create
     mov [rbp - 48], rax     ; new_ptr
     mov qword [rbp - 56], 0 ; result_count = 0
-    xor rcx, rcx            ; i = 0
+    mov qword [rbp - 64], 0 ; i = 0
 .filter_iter:
+    mov rcx, [rbp - 64]     ; reload i
     cmp rcx, r13
     jge .filter_done
     mov rdi, r15            ; env_ptr
@@ -729,11 +731,12 @@ filter:
     ; keep element: copy via register
     mov r8, [rbp - 48]
     mov r9, [rbp - 56]
+    mov rcx, [rbp - 64]     ; reload i
     mov r10, [rbx + rcx*8]
     mov [r8 + r9*8], r10
     inc qword [rbp - 56]
 .filter_skip:
-    inc rcx
+    inc qword [rbp - 64]
     jmp .filter_iter
 .filter_done:
     ; fix result length
@@ -741,7 +744,7 @@ filter:
     mov r9, [rbp - 56]
     mov [r8 - 8], r9        ; length = result_count
     mov rax, [rbp - 48]
-    add rsp, 16
+    add rsp, 24
     pop r15
     pop r14
     pop r13
@@ -763,23 +766,26 @@ reduce:
     push r13
     push r14
     push r15
+    sub rsp, 8             ; one slot for loop counter
     mov rbx, rdi            ; array_ptr
     mov r12, rdx            ; closure_ptr
     mov r13, [rbx - 8]     ; length
     mov r14, [r12]          ; fn_ptr
     mov r15, [r12 + 8]      ; env_ptr
     mov rax, rsi            ; acc = init
-    xor rcx, rcx            ; i = 0
+    mov qword [rbp - 48], 0 ; i = 0
 .reduce_iter:
+    mov rcx, [rbp - 48]     ; reload i
     cmp rcx, r13
     jge .reduce_done
     mov rdi, r15            ; env_ptr
     mov rsi, rax             ; acc
     mov rdx, [rbx + rcx*8]  ; elem
     call r14                 ; fn(env_ptr, acc, elem)
-    inc rcx
+    inc qword [rbp - 48]
     jmp .reduce_iter
 .reduce_done:
+    add rsp, 8
     pop r15
     pop r14
     pop r13

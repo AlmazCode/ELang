@@ -10,7 +10,7 @@ fn is_divisible(n: i64, d: i64) -> i64 {
 }
 
 fn fizzbuzz(n: i64) -> void {
-    let mut i = 1
+    let mut i: i64 = 1
     while i <= n {
         if is_divisible(i, 15) == 1 {
             print_str("FizzBuzz")
@@ -27,7 +27,7 @@ fn fizzbuzz(n: i64) -> void {
     print_str("\n")
 }
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== FizzBuzz 1-30 ===\n")
     fizzbuzz(30)
 
@@ -41,7 +41,7 @@ fn main() -> void {
 
     // Match
     print_str("\nMatch: divide(100, 7) = ")
-    let result = match divide(100, 7) {
+    let result: i64 = match divide(100, 7) {
         Ok(val) => val
         Err(_) => 0
     }
@@ -56,15 +56,16 @@ fn main() -> void {
 
     // For loop
     print_str("\nFor loop: ")
-    for i in 0..5 => print_int(i * i)
+    for i: i64 in 0..5 => print_int(i * i)
     print_str("\n")
 
     // If expression
     print_str("\nIf expression: ")
-    let temp = 25
-    let weather = if temp > 30 { "hot" } else if temp > 20 { "warm" } else { "cold" }
+    let temp: i64 = 25
+    let weather: string = if temp > 30 { "hot" } else if temp > 20 { "warm" } else { "cold" }
     print_str(weather)
     print_str("\n")
+    return 0
 }
 
 fn divide(a: i64, b: i64) -> Result<i64, i64> {

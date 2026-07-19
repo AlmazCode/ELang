@@ -48,7 +48,7 @@ fn clamp(value: i64, min_val: i64, max_val: i64) -> i64 {
     }
 }
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Функции ===\n\n")
 
     // Вызов функций
@@ -79,4 +79,5 @@ fn main() -> void {
     // Функция без возврата
     print_str("\n")
     greet(42)
+    return 0
 }

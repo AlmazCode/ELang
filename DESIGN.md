@@ -1,4 +1,4 @@
-# ELang v0.42.0 Syntax Design
+# ELang v0.43.0 Syntax Design
 
 ## Identity: "Systems programming that reads like data flow"
 
@@ -8,10 +8,11 @@ The compiler does the boring work so you don't have to.
 
 Автор: **AlmazCode**
 
-Three pillars:
+Four pillars:
 1. **Expression-oriented** — everything returns a value
 2. **Pipeline-first** — data flows through `|>` chains
-3. **Zero ceremony** — the compiler infers what it can
+3. **Explicit typing** — all types are declared explicitly
+4. **Struct = Class** — OOP through structs with methods
 
 ---
 
@@ -416,9 +417,166 @@ let value = risky_operation() catch {
 | **Closures** | **High** | **High** | **Done** |
 | **map/filter/reduce** | **Medium** | **High** | **Done** |
 | **for-in + enumerate** | **Medium** | **Medium** | **Done** |
-| Closures: captures | High | High | Planned |
-| Struct methods | Medium | High | Planned |
-| Enum variants with data | Medium | High | Planned |
+| Closures: captures | High | High | ✅ Done |
+| Struct methods | Medium | High | ✅ Done |
+| Enum variants with data | Medium | High | ✅ Done |
 | Named arguments | Medium | Low | Planned |
 | Generics | High | High | Planned |
 | Traits | High | High | Planned |
+
+---
+
+## Feature: Explicit Typing
+
+All variables and functions must have explicit type annotations.
+
+```elang
+// Correct
+let x: i64 = 42
+let name: string = "hello"
+fn add(a: i64, b: i64) -> i64 { a + b }
+fn main() -> u8 { return 0 }
+
+// Error
+let x = 42           // Parse error: expected ':'
+fn add(a, b) { a+b } // Parse error: expected ':'
+```
+
+**Design decision:** Explicit types improve code readability and catch errors early. Type inference is available but not required.
+
+---
+
+## Feature: Struct = Class
+
+Structs are heap-allocated objects with fields and methods. They serve as the primary OOP mechanism.
+
+### Memory Layout
+
+```
+[refcount:8][field_count:8][field0:8][field1:8]...
+             ^                            ^
+             header                       data start (returned pointer)
+```
+
+### Declaration
+
+```elang
+struct Point {
+    x: i64
+    y: i64
+}
+```
+
+### Constructor
+
+```elang
+impl Point {
+    fn new(x: i64, y: i64) -> Point {
+        Point(x, y)
+    }
+}
+```
+
+### Methods
+
+```elang
+impl Point {
+    fn distance(self: Point, other: Point) -> i64 {
+        let dx: i64 = self.x - other.x
+        let dy: i64 = self.y - other.y
+        dx * dx + dy * dy
+    }
+}
+
+let p1: Point = Point::new(1, 2)
+let p2: Point = Point::new(4, 6)
+let d: i64 = p1.distance(p2)
+```
+
+**Design decision:** Methods are syntactic sugar for functions with `self` as first parameter. No vtable, no dynamic dispatch. Static dispatch only.
+
+---
+
+## Feature: Enums with Auto Methods
+
+Enums automatically get `tag()`, `name()`, and `count()` methods.
+
+### Simple Enums
+
+```elang
+enum Color { Red, Green, Blue }
+enum Direction { North, South, East, West }
+```
+
+### Auto Methods
+
+```elang
+let c: i64 = Color::Green
+c.tag()       // → 1
+c.name()      // → "Green"
+Color.count() // → 3
+```
+
+**Implementation:** Auto-generated functions `Color_tag()`, `Color_name()`, `Color_count()` with name table in .data section.
+
+---
+
+## Feature: impl Blocks
+
+Methods are defined in `impl` blocks associated with a type.
+
+```elang
+struct Point { x: i64, y: i64 }
+
+impl Point {
+    fn new(x: i64, y: i64) -> Point { Point(x, y) }
+    fn distance(self: Point, other: Point) -> i64 { ... }
+}
+```
+
+**Codegen:** Methods are compiled as functions with type prefix: `Point_new`, `Point_distance`.
+
+---
+
+## Feature: Closures with Captures
+
+Closures can capture variables from outer scope via environment struct.
+
+```elang
+let y: i64 = 42
+let f = fn x => x + y  // captures y
+let result: i64 = f(8)  // → 50
+```
+
+**Implementation:** Environment struct on heap: `[count:8][env[0]:8][env[1]:8]...`. Closure object: `[fn_ptr, env_ptr]`.
+
+---
+
+## Calling Conventions
+
+### User Functions
+
+```asm
+; rdi = env_ptr (NULL for non-closures)
+; rsi = arg0
+; rdx = arg1
+; rcx = arg2
+; r8 = arg3
+; r9 = arg4
+```
+
+### Struct Constructors
+
+```asm
+; Standard convention:
+; rdi = arg0
+; rsi = arg1
+; rdx = arg2
+```
+
+### Enum Auto Methods
+
+```asm
+; Standard convention:
+; rdi = enum_value
+```

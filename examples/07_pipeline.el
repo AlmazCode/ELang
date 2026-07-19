@@ -9,7 +9,7 @@ fn double(x: i64) -> i64 { x * 2 }
 fn negate(x: i64) -> i64 { 0 - x }
 fn abs(x: i64) -> i64 { if x < 0 { 0 - x } else { x } }
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Pipeline |> ===\n\n")
 
     // --- Простой pipeline ---
@@ -47,4 +47,5 @@ fn main() -> void {
     print_str("((5 + 5) * 2) + 1 = ")
     5 |> add(5) |> double() |> add(1) |> print_int()
     print_str("\n")
+    return 0
 }

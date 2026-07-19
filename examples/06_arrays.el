@@ -2,12 +2,12 @@
 // Массивы — литералы, индексы, .len
 // ============================================
 
-fn main() -> void {
+fn main() -> u8 {
     print_str("=== Массивы ===\n\n")
 
     // --- Создание массива ---
     print_str("--- Создание ---\n")
-    let arr = [10, 20, 30, 40, 50]
+    let arr: [i64] = [10, 20, 30, 40, 50]
 
     print_str("arr = [10, 20, 30, 40, 50]\n")
 
@@ -33,8 +33,8 @@ fn main() -> void {
 
     // --- Сумма элементов через while ---
     print_str("\n--- Сумма (while) ---\n")
-    let mut sum = 0
-    let mut i = 0
+    let mut sum: i64 = 0
+    let mut i: i64 = 0
     while i < arr.len {
         sum = sum + arr[i]
         i = i + 1
@@ -45,8 +45,8 @@ fn main() -> void {
 
     // --- Массив с выражениями ---
     print_str("\n--- Массив с выражениями ---\n")
-    let x = 5
-    let arr2 = [x, x + 1, x * 2]
+    let x: i64 = 5
+    let arr2: [i64] = [x, x + 1, x * 2]
     print_str("arr2 = [5, 6, 10]\n")
     print_str("arr2[1] = ")
     print_int(arr2[1])
@@ -54,8 +54,8 @@ fn main() -> void {
 
     // --- Поиск максимума ---
     print_str("\n--- Максимум ---\n")
-    let mut max = arr[0]
-    let mut j = 1
+    let mut max: i64 = arr[0]
+    let mut j: i64 = 1
     while j < arr.len {
         if arr[j] > max {
             max = arr[j]
@@ -68,11 +68,12 @@ fn main() -> void {
 
     // --- Массив в цикле for ---
     print_str("\n--- for по массиву ---\n")
-    for k in 0..arr.len {
+    for k: i64 in 0..arr.len {
         print_str("arr[")
         print_int(k)
         print_str("] = ")
         print_int(arr[k])
         print_str("\n")
     }
+    return 0
 }

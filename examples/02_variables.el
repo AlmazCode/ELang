@@ -3,11 +3,11 @@
 // ============================================
 // ELang: immutable по умолчанию, mut для изменяемых переменных
 
-fn main() -> void {
+fn main() -> u8 {
     // --- Immutable переменные ---
-    let x = 42
-    let name = "ELang"
-    let flag = true
+    let x: i64 = 42
+    let name: string = "ELang"
+    let flag: bool = true
 
     print_str("=== Immutable ===\n")
     print_str("x = ")
@@ -21,8 +21,8 @@ fn main() -> void {
     // x = 100  // ОШИБКА: нельзя изменить immutable переменную
 
     // --- Mutable переменные ---
-    let mut counter = 0
-    let mut sum = 0
+    let mut counter: i64 = 0
+    let mut sum: i64 = 0
 
     print_str("\n=== Mutable ===\n")
     while counter < 5 {
@@ -42,8 +42,9 @@ fn main() -> void {
     print_str("\n")
 
     // --- Неявный вывод типа ---
-    let auto = 100  // тип выводится как i64
+    let auto: i64 = 100  // тип выводится как i64
     print_str("\nauto = ")
     print_int(auto)
     print_str("\n")
+    return 0
 }
