@@ -39,11 +39,7 @@ run: test
 lib:
 	$(MAKE) -C lib
 
-.PHONY: all clean test run lib install run-file
+.PHONY: all clean test run lib run-file
 
 run-file: all
 	./elc $(FILE)
-
-install: all
-	cp elc /usr/local/bin/elc 2>/dev/null || sudo cp elc /usr/local/bin/elc
-	@echo "Installed: /usr/local/bin/elc"
