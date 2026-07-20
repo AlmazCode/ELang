@@ -83,7 +83,6 @@ typedef struct {
     /* function table for cross-module resolution */
     struct { char *name; char *module; type_info_t *type; int is_export; } *fn_table;
     int fn_count, fn_cap;
-    int std_imported;  /* 1 if using "std" was encountered */
 } sem_ctx_t;
 
 void sem_init(sem_ctx_t *ctx);

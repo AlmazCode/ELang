@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "semantics.h"
-#include "codegen.h"  /* for MAX_IDENT_LEN */
+#include "config.h"  /* for MAX_IDENT_LEN */
 
 /* ===== External Function Handling ===== */
 /* The compiler doesn't know about library functions.
@@ -15,7 +15,7 @@
 /* ===== Type Info ===== */
 
 type_info_t *type_new(type_kind_t kind) {
-    type_info_t *t = calloc(1, sizeof(type_info_t));
+    type_info_t *t = SAFE_CALLOC(1, sizeof(type_info_t));
     t->kind = kind;
     t->array_len = -1;
     return t;
@@ -56,7 +56,7 @@ type_info_t *type_copy(type_info_t *t) {
     c->array_len = t->array_len;
     if (t->fn.count > 0) {
         c->fn.count = t->fn.count;
-        c->fn.params = malloc(sizeof(type_info_t*) * t->fn.count);
+        c->fn.params = SAFE_MALLOC(sizeof(type_info_t*) * t->fn.count);
         for (int i = 0; i < t->fn.count; i++)
             c->fn.params[i] = type_copy(t->fn.params[i]);
     }
@@ -64,7 +64,7 @@ type_info_t *type_copy(type_info_t *t) {
         c->result.ok_type = type_copy(t->result.ok_type);
         c->result.err_type = type_copy(t->result.err_type);
     }
-    if (t->struct_name) c->struct_name = strdup(t->struct_name);
+    if (t->struct_name) c->struct_name = SAFE_STRDUP(t->struct_name);
     return c;
 }
 
@@ -190,23 +190,13 @@ const char *type_name(type_info_t *t) {
         case TYPE_ERR_RESULT: return "Err";
         default: break;
     }
-    /* for pointer/array types, use rotating static buffers
-     * WARNING: if a single printf/fprintf call uses more type_name() results
-     * than the number of buffers below, earlier results will be overwritten.
-     * Max safe usage per call: 8 concurrent type_name() results. */
-    {
-        static char bufs[8][128];
-        static int idx = 0;
-        char *buf = bufs[idx++ & 7];
-        type_name_buf(t, buf, sizeof(bufs[0]));
-        return buf;
-    }
+    return "?";
 }
 
 /* ===== Scope / Symbol Table ===== */
 
 scope_t *scope_new(scope_t *parent) {
-    scope_t *s = calloc(1, sizeof(scope_t));
+    scope_t *s = SAFE_CALLOC(1, sizeof(scope_t));
     s->parent = parent;
     s->scope_depth = parent ? parent->scope_depth + 1 : 0;
     return s;
@@ -225,9 +215,9 @@ void scope_free(scope_t *s) {
 void scope_add(scope_t *s, const char *name, type_info_t *type, int is_mut) {
     if (s->count >= s->cap) {
         s->cap = s->cap ? s->cap * 2 : 16;
-        s->symbols = realloc(s->symbols, sizeof(symbol_t) * s->cap);
+        s->symbols = SAFE_REALLOC(s->symbols, sizeof(symbol_t) * s->cap);
     }
-    s->symbols[s->count].name = strdup(name);
+    s->symbols[s->count].name = SAFE_STRDUP(name);
     s->symbols[s->count].type = type;
     s->symbols[s->count].stack_offset = 0;
     s->symbols[s->count].is_global = 0;
@@ -276,7 +266,7 @@ void sem_error(sem_ctx_t *ctx, int line, int col, const char *fmt, ...) {
 
     if (ctx->error_count >= ctx->error_cap) {
         ctx->error_cap = ctx->error_cap ? ctx->error_cap * 2 : 8;
-        ctx->errors = realloc(ctx->errors, sizeof(char*) * ctx->error_cap);
+        ctx->errors = SAFE_REALLOC(ctx->errors, sizeof(char*) * ctx->error_cap);
     }
     char *msg;
     asprintf(&msg, "Type error at %d:%d: %s", line, col, buf);
@@ -316,7 +306,7 @@ type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
             }
             /* unknown type — create as struct for now */
             type_info_t *t = type_new(TYPE_STRUCT);
-            t->struct_name = strdup(name);
+            t->struct_name = SAFE_STRDUP(name);
             return t;
         }
         case AST_BINARY_OP: {
@@ -544,8 +534,8 @@ void sem_fold_constants(ast_node_t *node) {
                     case TOKEN_PLUS: result = a + b; break;
                     case TOKEN_MINUS: result = a - b; break;
                     case TOKEN_STAR: result = a * b; break;
-                    case TOKEN_SLASH: result = b != 0 ? a / b : 0; break;
-                    case TOKEN_PERCENT: result = b != 0 ? a % b : 0; break;
+                    case TOKEN_SLASH: if (b == 0) return; result = a / b; break;
+                    case TOKEN_PERCENT: if (b == 0) return; result = a % b; break;
                     case TOKEN_EQ: result = a == b; break;
                     case TOKEN_NEQ: result = a != b; break;
                     case TOKEN_LT: result = a < b; break;
@@ -568,7 +558,7 @@ void sem_fold_constants(ast_node_t *node) {
                 node->as.binary.right->type == AST_STRING_LIT) {
                 size_t l1 = node->as.binary.left->as.string_val.length;
                 size_t l2 = node->as.binary.right->as.string_val.length;
-                char *buf = malloc(l1 + l2 + 1);
+                char *buf = SAFE_MALLOC(l1 + l2 + 1);
                 memcpy(buf, node->as.binary.left->as.string_val.value, l1);
                 memcpy(buf + l1, node->as.binary.right->as.string_val.value, l2);
                 buf[l1 + l2] = '\0';
@@ -698,7 +688,8 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
                 if (val_type->kind != TYPE_UNKNOWN) {
                     sem_error(ctx, node->line, node->col,
                         "type mismatch: expected %s, got %s",
-                        type_name(ann_type), type_name(val_type));
+                        type_name_buf(ann_type, (char[128]){0}, 128),
+                        type_name_buf(val_type, (char[128]){0}, 128));
                 }
             }
             scope_add(ctx->current_scope, node->as.let.name, final_type, 1);
@@ -721,7 +712,8 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
                     if (val_type->kind != TYPE_UNKNOWN)
                         sem_error(ctx, node->line, node->col,
                             "type mismatch: expected %s, got %s",
-                            type_name(sym->type), type_name(val_type));
+                            type_name_buf(sym->type, (char[128]){0}, 128),
+                            type_name_buf(val_type, (char[128]){0}, 128));
                 }
             }
             break;
@@ -733,7 +725,8 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
                     if (ret_type->kind != TYPE_UNKNOWN)
                         sem_error(ctx, node->line, node->col,
                             "return type mismatch: expected %s, got %s",
-                            type_name(ctx->current_fn_return), type_name(ret_type));
+                            type_name_buf(ctx->current_fn_return, (char[128]){0}, 128),
+                            type_name_buf(ret_type, (char[128]){0}, 128));
                 }
             }
             break;
@@ -744,7 +737,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
                 ret_type = sem_resolve_type(ctx, node->as.fn_decl.return_type);
 
             /* build function type */
-            type_info_t **param_types = malloc(sizeof(type_info_t*) * node->as.fn_decl.param_count);
+            type_info_t **param_types = SAFE_MALLOC(sizeof(type_info_t*) * node->as.fn_decl.param_count);
             for (int i = 0; i < node->as.fn_decl.param_count; i++) {
                 param_types[i] = node->as.fn_decl.params[i].type_expr
                     ? sem_resolve_type(ctx, node->as.fn_decl.params[i].type_expr)
@@ -758,9 +751,9 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             /* add to fn_table for cross-module */
             if (ctx->fn_count >= ctx->fn_cap) {
                 ctx->fn_cap = ctx->fn_cap ? ctx->fn_cap * 2 : 16;
-                ctx->fn_table = realloc(ctx->fn_table, sizeof(*ctx->fn_table) * ctx->fn_cap);
+                ctx->fn_table = SAFE_REALLOC(ctx->fn_table, sizeof(*ctx->fn_table) * ctx->fn_cap);
             }
-            ctx->fn_table[ctx->fn_count].name = strdup(node->as.fn_decl.name);
+            ctx->fn_table[ctx->fn_count].name = SAFE_STRDUP(node->as.fn_decl.name);
             ctx->fn_table[ctx->fn_count].module = NULL;
             ctx->fn_table[ctx->fn_count].type = fn_type;
             ctx->fn_table[ctx->fn_count].is_export = 0;
@@ -842,13 +835,13 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
         case AST_STRUCT_DECL: {
             /* Register struct fields in type system */
             type_info_t *t = type_new(TYPE_STRUCT);
-            t->struct_name = strndup(node->as.struct_decl.name, node->as.struct_decl.name_len);
+            t->struct_name = SAFE_STRNDUP(node->as.struct_decl.name, node->as.struct_decl.name_len);
             t->fields.count = node->as.struct_decl.field_count;
-            t->fields.names = malloc(sizeof(char*) * t->fields.count);
-            t->fields.offsets = malloc(sizeof(int) * t->fields.count);
-            t->fields.types = malloc(sizeof(type_info_t*) * t->fields.count);
+            t->fields.names = SAFE_MALLOC(sizeof(char*) * t->fields.count);
+            t->fields.offsets = SAFE_MALLOC(sizeof(int) * t->fields.count);
+            t->fields.types = SAFE_MALLOC(sizeof(type_info_t*) * t->fields.count);
             for (int i = 0; i < t->fields.count; i++) {
-                t->fields.names[i] = strndup(
+                t->fields.names[i] = SAFE_STRNDUP(
                     node->as.struct_decl.fields[i].name,
                     node->as.struct_decl.fields[i].name_len);
                 t->fields.offsets[i] = i * 8;  /* each field is 8 bytes */
@@ -863,20 +856,15 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
         case AST_ENUM_DECL: {
             /* Register enum type in type system */
             type_info_t *t = type_new(TYPE_ENUM);
-            t->struct_name = strndup(node->as.enum_decl.name, node->as.enum_decl.name_len);
+            t->struct_name = SAFE_STRNDUP(node->as.enum_decl.name, node->as.enum_decl.name_len);
             /* Register in scope */
             scope_add(ctx->current_scope, t->struct_name, t, 0);
             break;
         }
         case AST_IMPORT_DECL:
-        case AST_USING: {
-            /* check if this is "std" module */
-            if (node->as.using_decl.path_len == 3 &&
-                memcmp(node->as.using_decl.path, "std", 3) == 0) {
-                ctx->std_imported = 1;
-            }
+            /* Import nodes are resolved and removed before sem_analyze.
+             * This case exists only for safety if imports remain. */
             break;
-        }
         case AST_CALL:
             /* check function calls for unknown functions */
             sem_infer_expr(ctx, node);

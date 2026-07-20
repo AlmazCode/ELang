@@ -100,6 +100,669 @@ print_hex:
     leave
     ret
 
+; ============================================================
+; Universal print functions
+; ============================================================
+
+; --- Format flags ---
+FMT_SIGN    equ 1       ; show + for positive numbers
+FMT_ZERO    equ 2       ; pad with zeros
+FMT_LEFT    equ 4       ; left-align
+FMT_BASE_SH equ 3       ; bits 3-5: base selector
+FMT_BASE2   equ (1 << FMT_BASE_SH)   ; binary
+FMT_BASE8   equ (2 << FMT_BASE_SH)   ; octal
+FMT_BASE16  equ (3 << FMT_BASE_SH)   ; hex
+FMT_UPPER   equ 64      ; uppercase hex (A-F)
+FMT_BASE_MASK equ 0x38  ; mask for base bits
+
+section .data
+nz_sign: db "+", 0
+neg_sign: db "-", 0
+hex_chars: db "0123456789abcdef"
+hex_upper: db "0123456789ABCDEF"
+
+section .text
+
+; print_i64(rdi=value)
+; Print signed integer in decimal.
+global print_i64
+print_i64:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+    mov rax, rdi
+
+    ; --- Handle sign ---
+    test rax, rax
+    jns .pi_positive
+    ; negative: print '-', negate
+    push rax
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rel neg_sign]
+    mov rdx, 1
+    syscall
+    pop rax
+    neg rax
+    jmp .pi_convert
+
+.pi_positive:
+    ; no sign prefix
+
+.pi_convert:
+    ; rax = absolute value
+    lea rsi, [rbp-1]
+    mov byte [rsi], 0       ; null terminator
+    mov rcx, 10
+    test rax, rax
+    jnz .pi_loop
+    dec rsi
+    mov byte [rsi], '0'
+    jmp .pi_print
+.pi_loop:
+    test rax, rax
+    jz .pi_print
+    xor rdx, rdx
+    div rcx
+    add dl, '0'
+    dec rsi
+    mov [rsi], dl
+    jmp .pi_loop
+
+.pi_print:
+    lea rdx, [rbp-1]
+    sub rdx, rsi            ; rdx = length
+    mov rax, 1
+    mov rdi, 1
+    ; rsi already points to start of number
+    syscall
+    leave
+    ret
+
+; print_i64_fmt(rdi=value, rsi=width, rdx=flags)
+; rdi = signed integer value
+; rsi = minimum field width (0 = auto)
+; rdx = format flags (FMT_SIGN | FMT_ZERO | FMT_LEFT | FMT_BASE* | FMT_UPPER)
+global print_i64_fmt
+print_i64_fmt:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 64             ; local buffer: [rbp-64] = start of number string
+    mov [rbp-8], rdi        ; save value
+    mov [rbp-16], rsi       ; save width
+    mov [rbp-24], rdx       ; save flags
+
+    ; --- Determine sign ---
+    mov rax, rdi
+    mov byte [rbp-25], 0    ; sign_char = 0 (no sign)
+    test rax, rax
+    jns .pfmt_check_sign
+    ; negative: print '-', negate
+    mov byte [rbp-25], '-'
+    neg rax
+    jmp .pfmt_convert
+.pfmt_check_sign:
+    test dl, FMT_SIGN
+    jz .pfmt_convert
+    mov byte [rbp-25], '+'
+
+.pfmt_convert:
+    ; --- Extract base from flags ---
+    mov rcx, rdx
+    and rcx, FMT_BASE_MASK
+    shr rcx, FMT_BASE_SH
+    ; rcx: 0=base10, 1=base2, 2=base8, 3=base16
+    cmp rcx, 0
+    je .pfmt_dec
+    cmp rcx, 1
+    je .pfmt_bin
+    cmp rcx, 2
+    je .pfmt_oct
+    jmp .pfmt_hex
+
+.pfmt_dec:
+    mov rcx, 10
+    jmp .pfmt_do_convert
+.pfmt_bin:
+    mov rcx, 2
+    jmp .pfmt_do_convert
+.pfmt_oct:
+    mov rcx, 8
+    jmp .pfmt_do_convert
+.pfmt_hex:
+    mov rcx, 16
+
+.pfmt_do_convert:
+    ; rax = |value|, rcx = base
+    ; Convert to string (right to left), store at [rbp-2]
+    lea rdi, [rbp-2]
+    mov byte [rdi], 0       ; null terminator
+    test rax, rax
+    jnz .pfmt_loop
+    ; value == 0 → special case
+    dec rdi
+    mov byte [rdi], '0'
+    jmp .pfmt_reverse_done
+.pfmt_loop:
+    test rax, rax
+    jz .pfmt_reverse_done
+    xor rdx, rdx
+    div rcx                 ; rax = quotient, rdx = remainder
+    ; Look up hex digit
+    cmp rdx, 10
+    jl .pfmt_digit_dec
+    ; hex digit
+    test byte [rbp-24], FMT_UPPER
+    jnz .pfmt_digit_upper
+    lea r8, [rel hex_chars]
+    jmp .pfmt_digit_store
+.pfmt_digit_upper:
+    lea r8, [rel hex_upper]
+.pfmt_digit_store:
+    add r8, rdx
+    mov dl, [r8]
+    jmp .pfmt_digit_write
+.pfmt_digit_dec:
+    add dl, '0'
+.pfmt_digit_write:
+    dec rdi
+    mov [rdi], dl
+    jmp .pfmt_loop
+
+.pfmt_reverse_done:
+    ; rdi = pointer to start of number string
+    ; Calculate length: rbp-2 - rdi
+    lea rax, [rbp-2]
+    sub rax, rdi
+    mov [rbp-32], rax       ; num_len
+    mov [rbp-48], rdi       ; save num_start pointer
+
+    ; --- Print sign character if present ---
+    cmp byte [rbp-25], 0
+    je .pfmt_calc_padding
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rbp-25]
+    mov rdx, 1
+    syscall
+    ; Reduce width by 1 for sign
+    dec qword [rbp-16]
+
+.pfmt_calc_padding:
+    ; --- Calculate padding ---
+    mov rax, [rbp-16]       ; width
+    sub rax, [rbp-32]       ; width - num_len
+    jle .pfmt_print_num     ; no padding needed
+    mov [rbp-40], rax       ; pad_count
+
+    ; --- Print left padding ---
+    test byte [rbp-24], FMT_LEFT
+    jnz .pfmt_print_num     ; skip left padding if left-aligned
+
+    ; Choose pad char: '0' if FMT_ZERO, else ' '
+    mov dl, ' '
+    test byte [rbp-24], FMT_ZERO
+    jz .pfmt_pad_loop
+    mov dl, '0'
+.pfmt_pad_loop:
+    cmp qword [rbp-40], 0
+    jle .pfmt_print_num
+    mov byte [rbp-41], dl
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rbp-41]
+    mov rdx, 1
+    syscall
+    dec qword [rbp-40]
+    jmp .pfmt_pad_loop
+
+.pfmt_print_num:
+    ; --- Print the number ---
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, [rbp-48]       ; num_start pointer (saved before sign print)
+    mov rdx, [rbp-32]       ; num_len
+    syscall
+
+    ; --- Print right padding (if left-aligned) ---
+    test byte [rbp-24], FMT_LEFT
+    jz .pfmt_done
+    mov rax, [rbp-16]
+    sub rax, [rbp-32]
+    jle .pfmt_done
+    mov [rbp-40], rax
+.pfmt_rpad_loop:
+    cmp qword [rbp-40], 0
+    jle .pfmt_done
+    mov byte [rbp-41], ' '
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rbp-41]
+    mov rdx, 1
+    syscall
+    dec qword [rbp-40]
+    jmp .pfmt_rpad_loop
+
+.pfmt_done:
+    leave
+    ret
+
+; print_u64(rdi=value)
+; Print unsigned integer in decimal.
+global print_u64
+print_u64:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+    mov rax, rdi
+    lea rsi, [rbp-1]
+    mov byte [rsi], 0
+    mov rcx, 10
+    test rax, rax
+    jnz .pu_loop
+    dec rsi
+    mov byte [rsi], '0'
+    jmp .pu_pr
+.pu_loop:
+    test rax, rax
+    jz .pu_pr
+    xor rdx, rdx
+    div rcx
+    add dl, '0'
+    dec rsi
+    mov [rsi], dl
+    jmp .pu_loop
+.pu_pr: lea rdx, [rbp-1]
+    sub rdx, rsi
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    leave
+    ret
+
+; print_bool(rdi=value)
+; Print boolean: 0 → "false", non-zero → "true"
+section .data
+bool_true: db "true", 0
+bool_true_len equ 4
+bool_false: db "false", 0
+bool_false_len equ 5
+section .text
+global print_bool
+print_bool:
+    test rdi, rdi
+    jnz .pb_true
+    ; print "false"
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [bool_false]
+    mov rdx, bool_false_len
+    syscall
+    ret
+.pb_true:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [bool_true]
+    mov rdx, bool_true_len
+    syscall
+    ret
+
+; print_f64(rdi=bits)
+; Print IEEE 754 double as decimal string.
+; rdi contains the double bits (as integer).
+section .data
+f64_dot: db ".", 0
+f64_neg: db "-", 0
+section .text
+global print_f64
+print_f64:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 64
+
+    ; Save original bits
+    mov [rbp-8], rdi
+
+    ; Load double into xmm0
+    movq xmm0, rdi
+
+    ; Check sign
+    mov rax, rdi
+    shr rax, 63
+    test rax, rax
+    jz .pf64_abs
+    ; Print '-'
+    push rdi
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rel f64_neg]
+    mov rdx, 1
+    syscall
+    pop rdi
+    ; Negate: flip sign bit
+    btc rdi, 63
+    movq xmm0, rdi
+    mov [rbp-8], rdi         ; save negated bits
+
+.pf64_abs:
+    ; Extract integer part via truncation
+    cvttsd2si rax, xmm0
+    mov [rbp-16], rax        ; save integer part
+
+    ; Print integer part
+    mov rdi, [rbp-16]
+    call print_i64
+
+    ; Extract fractional part: frac = original - floor(original)
+    ; Reload the (possibly negated) double
+    movq xmm0, [rbp-8]
+    cvttsd2si rax, xmm0      ; rax = truncated integer
+    cvtsi2sd xmm1, rax       ; xmm1 = integer as double
+    subsd xmm0, xmm1         ; xmm0 = fractional part (0.0 to 0.999...)
+
+    ; Check if fractional part is effectively zero
+    movsd xmm1, [rel f64_zero]
+    comisd xmm0, xmm1
+    jp .pf64_done
+    jbe .pf64_done
+
+    ; Print '.'
+    push rdi
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rel f64_dot]
+    mov rdx, 1
+    syscall
+    pop rdi
+
+    ; Print up to 6 decimal digits
+    mov rcx, 6
+.pf64_digit_loop:
+    test rcx, rcx
+    jz .pf64_done
+    ; digit = frac * 10
+    movsd xmm1, [rel f64_ten]
+    mulsd xmm0, xmm1
+    ; extract integer digit
+    cvttsd2si rax, xmm0
+    mov [rbp-24], rax
+    ; print digit character
+    add al, '0'
+    mov [rbp-25], al
+    push rcx
+    push rdi
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rbp-25]
+    mov rdx, 1
+    syscall
+    pop rdi
+    pop rcx
+    ; frac = frac - digit (via xmm0 still has fractional*10, subtract integer part)
+    mov rax, [rbp-24]
+    cvtsi2sd xmm1, rax
+    subsd xmm0, xmm1
+    ; Check if remaining frac is effectively zero
+    movsd xmm1, [rel f64_zero]
+    comisd xmm0, xmm1
+    jp .pf64_done
+    jbe .pf64_done
+    dec rcx
+    jmp .pf64_digit_loop
+
+.pf64_done:
+    leave
+    ret
+
+section .data
+f64_zero: dq 0x3E45798EE2308C3A  ; ~1e-6 (threshold for "zero")
+f64_ten: dq 0x4024000000000000    ; 10.0
+
+; print_ptr(rdi=value)
+; Print pointer as "0x" + hex digits (always 12 hex digits for 64-bit).
+section .data
+ptr_prefix: db "0x", 0
+ptr_zeros: db "000000000000", 0  ; 12 zeros
+section .text
+global print_ptr
+print_ptr:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    mov rbx, rdi            ; save value
+
+    ; print "0x"
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [ptr_prefix]
+    mov rdx, 2
+    syscall
+
+    ; Convert 64-bit value to 16 hex digits (right to left)
+    mov rax, rbx
+    mov rcx, 16             ; digit count
+    lea rsi, [rbp-1]
+    mov byte [rsi], 0       ; null terminator
+.pp_loop:
+    dec rsi
+    mov rdx, rax
+    and rdx, 0xF
+    lea rdi, [rel hex_chars]
+    add rdi, rdx
+    mov dl, [rdi]
+    mov [rsi], dl
+    shr rax, 4
+    dec rcx
+    jnz .pp_loop
+
+    ; Print 16 hex digits
+    mov rax, 1
+    mov rdi, 1
+    mov rdx, 16
+    ; rsi already points to start
+    syscall
+
+    pop rbx
+    pop rbp
+    ret
+
+; print_newline()
+; Print a newline character.
+global print_newline
+print_newline:
+    push rbp
+    mov rbp, rsp
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [newline_char]
+    mov rdx, 1
+    syscall
+    pop rbp
+    ret
+
+; print_arr_i64(rdi=arr_ptr)
+; Print array of i64 as "[1, 2, 3]"
+section .data
+global arr_open
+arr_open: db "[", 0
+global arr_close
+arr_close: db "]", 0
+global arr_sep
+arr_sep: db ", ", 0
+global str_lparen
+str_lparen: db "(", 0
+global str_rparen
+str_rparen: db ")", 0
+global str_comma
+str_comma: db ", ", 0
+section .text
+global print_arr_i64
+print_arr_i64:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi            ; rbx = arr_ptr
+
+    ; print "["
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_open]
+    mov rdx, 1
+    syscall
+
+    mov r13, [rbx - 8]     ; r13 = length
+    test r13, r13
+    jz .pai_done
+
+    xor r12, r12            ; r12 = i = 0
+.pai_loop:
+    ; print element
+    mov rdi, [rbx + r12*8]
+    call print_i64
+    inc r12
+    cmp r12, r13
+    jge .pai_done
+    ; print ", "
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_sep]
+    mov rdx, 2
+    syscall
+    jmp .pai_loop
+
+.pai_done:
+    ; print "]"
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_close]
+    mov rdx, 1
+    syscall
+
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+; print_arr_str(rdi=arr_ptr)
+; Print array of strings as ["a", "b"]
+section .data
+str_quote: db '"', 0
+section .text
+global print_arr_str
+print_arr_str:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_open]
+    mov rdx, 1
+    syscall
+
+    mov r13, [rbx - 8]
+    test r13, r13
+    jz .pas_done
+
+    xor r12, r12
+.pas_loop:
+    ; print '"'
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [str_quote]
+    mov rdx, 1
+    syscall
+    ; print string content
+    mov rdi, [rbx + r12*8]
+    call print_str
+    ; print '"'
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [str_quote]
+    mov rdx, 1
+    syscall
+    inc r12
+    cmp r12, r13
+    jge .pas_done
+    ; print ", "
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_sep]
+    mov rdx, 2
+    syscall
+    jmp .pas_loop
+
+.pas_done:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_close]
+    mov rdx, 1
+    syscall
+
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+; print_arr_bool(rdi=arr_ptr)
+; Print array of bools as [true, false, true]
+global print_arr_bool
+print_arr_bool:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+
+    ; print "["
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_open]
+    mov rdx, 1
+    syscall
+
+    mov r13, [rbx - 8]     ; length
+    test r13, r13
+    jz .pab_done
+
+    xor r12, r12            ; i = 0
+.pab_loop:
+    ; print element
+    mov rdi, [rbx + r12*8]
+    call print_bool
+    inc r12
+    cmp r12, r13
+    jge .pab_done
+    ; print ", "
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_sep]
+    mov rdx, 2
+    syscall
+    jmp .pab_loop
+
+.pab_done:
+    ; print "]"
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_close]
+    mov rdx, 1
+    syscall
+
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
 ; exit(int code)
 global exit
 exit:
@@ -487,8 +1150,9 @@ len:
 
 ; push(array_ptr, elem) -> new_array_ptr
 ; rdi = array_ptr, rsi = elem
-global push
-push:
+; NOTE: named array_push to avoid conflict with x86 'push' instruction
+global array_push
+array_push:
     push rbp
     mov rbp, rsp
     push rbx
@@ -827,3 +1491,5 @@ oob_msg:        db "index out of bounds", 0
 pop_empty_msg:  db "pop from empty array", 0
 slice_oob_msg:  db "slice index out of bounds", 0
 alloc_fail_msg: db "out of memory", 0
+global div_zero_msg
+div_zero_msg:   db "division by zero", 0

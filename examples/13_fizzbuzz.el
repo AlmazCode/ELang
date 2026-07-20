@@ -3,7 +3,7 @@
 // ============================================
 // Демонстрация: функции, while, if/else if, модули, pipeline
 
-using "math"
+import "math"
 
 fn is_divisible(n: i64, d: i64) -> i64 {
     if n % d == 0 { 1 } else { 0 }

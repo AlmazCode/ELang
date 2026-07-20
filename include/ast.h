@@ -15,7 +15,7 @@ typedef enum {
     AST_FN_DECL, AST_STRUCT_DECL, AST_ENUM_DECL, AST_IMPORT_DECL,
     AST_MATCH, AST_STRUCT_LITERAL, AST_ENUM_LITERAL, AST_OK_EXPR, AST_ERR_EXPR,
     AST_PIPE, AST_DEFER, AST_WHEN, AST_TUPLE, AST_TUPLE_ASSIGN,
-    AST_USING, AST_PROGRAM,
+    AST_PROGRAM,
     AST_TRY_EXPR, AST_CATCH_EXPR, AST_PANIC_EXPR, AST_ASSERT_EXPR,
     AST_ARRAY_LITERAL, AST_LEN_EXPR,
     AST_CLOSURE,
@@ -48,7 +48,7 @@ struct ast_node {
         struct { ast_node_t *target, *value; } assign;
         struct {
             char *name; size_t name_len;
-            struct { char *name; size_t name_len; ast_node_t *type_expr; } *params;
+            struct { char *name; size_t name_len; ast_node_t *type_expr; ast_node_t *default_value; } *params;
             int param_count;
             ast_node_t *return_type, *body;
             int is_export;
@@ -58,7 +58,7 @@ struct ast_node {
             struct { char *name; size_t name_len; ast_node_t *type_expr; } *fields; } struct_decl;
         struct { char *name; size_t name_len; int variant_count;
             struct { char *name; size_t name_len; ast_node_t *value; } *variants; } enum_decl;
-        struct { char *path; size_t path_len; } import;
+        struct { char *path; size_t path_len; char *alias; size_t alias_len; int is_stdlib; } import;
         struct { ast_node_t *value;
             struct { ast_node_t *pattern, *result; } *cases; int case_count; } match_expr;
         struct { char *name; size_t name_len;
@@ -71,7 +71,6 @@ struct ast_node {
         struct { ast_node_t *condition, *then_block, *else_block; } when_expr;
         struct { ast_node_t **elements; int count; } tuple;
         struct { char **names; int name_count; ast_node_t *value; } tuple_assign;
-        struct { char *path; size_t path_len; } using_decl;
         struct { ast_node_t **declarations; int count; } program;
         struct { ast_node_t *operand; } try_expr;           /* expr? — error propagation */
         struct { ast_node_t *operand, *handler; } catch_expr; /* expr catch { handler } */

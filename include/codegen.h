@@ -2,13 +2,9 @@
 #ifndef ELANG_CODEGEN_H
 #define ELANG_CODEGEN_H
 
+#include "config.h"
 #include "ast.h"
 #include <stdio.h>
-
-/* --- Shared constants --- */
-#define MAX_IDENT_LEN       64    /* max identifier buffer size */
-#define MAX_EXTNAME_LEN     128   /* max extern name buffer size */
-#define MAX_PARSE_DEPTH     2000  /* parser recursion limit */
 
 typedef struct {
     int label;
@@ -19,7 +15,7 @@ typedef struct {
 typedef struct {
     FILE *output;
     int label_count, string_count;
-    struct { char *name; int stack_offset, size; } *symbols;
+    struct { char *name; int stack_offset, size; int is_float; } *symbols;
     int symbol_count, stack_size, max_stack_size;
     string_entry_t *strings;
     int string_entries;
@@ -40,6 +36,14 @@ typedef struct {
     /* Closure body buffer: bodies emitted after main code */
     struct { int label; char *asm_text; size_t asm_len; } *closure_bodies;
     int closure_body_count, closure_body_cap;
+    int ret_buf_off;     /* stack offset for tuple return buffer (-1 = none) */
+    int ret_tuple_count; /* number of elements in tuple return */
+    /* Module table: tracks project modules (merged, prefixed) vs stdlib (separate .o) */
+    struct { char *name; int is_stdlib; } *modules;
+    int module_count, module_cap;
+    /* Float constants table */
+    struct { int label; double value; } *float_entries;
+    int float_entries_count;
 } codegen_t;
 
 void codegen_init(codegen_t *cg, FILE *output);

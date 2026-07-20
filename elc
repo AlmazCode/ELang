@@ -1,15 +1,16 @@
 #!/bin/bash
-# ELang compiler wrapper — compile, assemble, link, run
+# ELang compiler wrapper — compile+run or compile only
 # Usage: elc <file.el>          — compile + run
 #        elc -c <file.el>       — compile only
 #        elc -check <file.el>   — type check only
 #        elc -o <out> <file.el> — custom output name
+#        elc -t <file.el>       — show tokens
+#        elc -a <file.el>       — show AST
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ELC="$SCRIPT_DIR/bin/elc"
-LIB_DIR="$SCRIPT_DIR/lib/build"
 
 if [ ! -f "$ELC" ]; then
     echo "elc: compiler not found, building..."
@@ -17,7 +18,7 @@ if [ ! -f "$ELC" ]; then
 fi
 
 usage() {
-    echo "ELang Compiler v0.5.0"
+    echo "ELang Compiler v0.50.0"
     echo ""
     echo "Usage:"
     echo "  elc <file.el>            Compile and run"
@@ -33,6 +34,7 @@ COMPILE_ONLY=0
 TYPE_CHECK=0
 OUTPUT=""
 INPUT=""
+EXTRA_ARGS=""
 
 # Parse args
 while [ $# -gt 0 ]; do
@@ -57,7 +59,7 @@ if [ ! -f "$INPUT" ]; then
     exit 1
 fi
 
-# Type check
+# Type check — pass through directly
 if [ "$TYPE_CHECK" -eq 1 ]; then
     "$ELC" -check "$INPUT"
     exit $?
@@ -72,41 +74,18 @@ else
     OUTPUT="${OUTPUT%.el}"
     CLEANUP=0
 fi
-ASM="${OUTPUT}.asm"
-OBJ="${OUTPUT}.o"
-BIN="${OUTPUT}.out"
 
-# Compile
-"$ELC" -o "$ASM" $EXTRA_ARGS "$INPUT"
-
-# Assemble
-nasm -f elf64 "$ASM" -o "$OBJ"
-
-# Build link libraries
-# Core is always linked
-LIBS="$LIB_DIR/core.o"
-
-# Auto-detect modules from "using" directives and add their .o files
-for mod in $(grep -oh 'using "[^"]*"' "$INPUT" 2>/dev/null | sed 's/using "\([^"]*\)".*/\1/' | sort -u); do
-    MOD_OBJ="$LIB_DIR/${mod}.o"
-    if [ -f "$MOD_OBJ" ]; then
-        LIBS="$LIBS $MOD_OBJ"
-    fi
-done
-
-# Link
-ld "$OBJ" $LIBS -o "$BIN"
-
-echo "elc: $INPUT -> $BIN"
+# Compile — the C compiler handles nasm + ld internally
+"$ELC" -o "$OUTPUT" $EXTRA_ARGS "$INPUT"
 
 # Run unless compile-only
 if [ "$COMPILE_ONLY" -eq 0 ]; then
-    "$BIN"
+    "$OUTPUT"
     EXIT_CODE=$?
     if [ "$CLEANUP" -eq 1 ]; then
-        rm -f "$ASM" "$OBJ" "$BIN"
+        rm -f "$OUTPUT" "${OUTPUT}.asm" "${OUTPUT}.o" "${OUTPUT}.o.tmp"
     fi
     exit $EXIT_CODE
 else
-    echo "elc: output: $BIN"
+    echo "elc: output: $OUTPUT"
 fi

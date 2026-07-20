@@ -2,9 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ast.h"
+#include "config.h"
 
 ast_node_t *ast_new(ast_type_t type, int line, int col) {
-    ast_node_t *n = calloc(1, sizeof(ast_node_t));
+    ast_node_t *n = SAFE_CALLOC(1, sizeof(ast_node_t));
     n->type = type; n->line = line; n->col = col; n->typed = NULL;
     return n;
 }
@@ -23,7 +24,6 @@ void free_node(ast_node_t *n) {
             free(n->as.tuple.elements); break;
         case AST_TUPLE_ASSIGN: for (int i = 0; i < n->as.tuple_assign.name_count; i++) free(n->as.tuple_assign.names[i]);
             free(n->as.tuple_assign.names); free_node(n->as.tuple_assign.value); break;
-        case AST_USING: free(n->as.using_decl.path); break;
         case AST_TRY_EXPR: free_node(n->as.try_expr.operand); break;
         case AST_CATCH_EXPR: free_node(n->as.catch_expr.operand); free_node(n->as.catch_expr.handler); break;
         case AST_PANIC_EXPR: free_node(n->as.panic_expr.message); break;
@@ -52,7 +52,8 @@ void free_node(ast_node_t *n) {
         case AST_ASSIGN: free_node(n->as.assign.target); free_node(n->as.assign.value); break;
         case AST_FN_DECL: free(n->as.fn_decl.name);
             for (int i = 0; i < n->as.fn_decl.param_count; i++) {
-                free(n->as.fn_decl.params[i].name); free_node(n->as.fn_decl.params[i].type_expr); }
+                free(n->as.fn_decl.params[i].name); free_node(n->as.fn_decl.params[i].type_expr);
+                free_node(n->as.fn_decl.params[i].default_value); }
             free(n->as.fn_decl.params); free_node(n->as.fn_decl.return_type); free_node(n->as.fn_decl.body); break;
         case AST_STRUCT_DECL: free(n->as.struct_decl.name);
             for (int i = 0; i < n->as.struct_decl.field_count; i++) {
@@ -62,7 +63,7 @@ void free_node(ast_node_t *n) {
             for (int i = 0; i < n->as.enum_decl.variant_count; i++) {
                 free(n->as.enum_decl.variants[i].name); free_node(n->as.enum_decl.variants[i].value); }
             free(n->as.enum_decl.variants); break;
-        case AST_IMPORT_DECL: free(n->as.import.path); break;
+        case AST_IMPORT_DECL: free(n->as.import.path); free(n->as.import.alias); break;
         case AST_MATCH: free_node(n->as.match_expr.value);
             for (int i = 0; i < n->as.match_expr.case_count; i++) {
                 free_node(n->as.match_expr.cases[i].pattern); free_node(n->as.match_expr.cases[i].result); }

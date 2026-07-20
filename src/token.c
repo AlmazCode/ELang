@@ -29,7 +29,7 @@ const char *token_type_name(token_type_t t) {
         case TOKEN_SEMICOLON: return ";"; case TOKEN_DOT: return ".";
         case TOKEN_DOTDOT: return ".."; case TOKEN_FAT_ARROW: return "=>";
         case TOKEN_PIPE_ARROW: return "|>"; case TOKEN_WHEN: return "when";
-        case TOKEN_DEFER: return "defer"; case TOKEN_USING: return "using";
+        case TOKEN_DEFER: return "defer";
         case TOKEN_COLONCOLON: return "::";
         case TOKEN_CATCH: return "catch"; case TOKEN_PANIC: return "panic";
         case TOKEN_ASSERT: return "assert"; case TOKEN_QUESTION: return "?";

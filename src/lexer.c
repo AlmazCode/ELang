@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "lexer.h"
+#include "config.h"
 
 static void advance(lexer_t *l) {
     if (l->current == '\n') { l->line++; l->col = 1; }
@@ -32,7 +33,7 @@ static token_type_t check_keyword(const char *w, size_t len) {
         {"alloc",5,TOKEN_ALLOC},{"free",4,TOKEN_FREE},{"syscall",7,TOKEN_SYSCALL},
         {"panic",5,TOKEN_PANIC},{"catch",5,TOKEN_CATCH},{"assert",6,TOKEN_ASSERT},
         {"Ok",2,TOKEN_OK},{"Err",3,TOKEN_ERR},{"Result",6,TOKEN_RESULT},
-        {"when",4,TOKEN_WHEN},{"defer",5,TOKEN_DEFER},{"using",5,TOKEN_USING},
+        {"when",4,TOKEN_WHEN},{"defer",5,TOKEN_DEFER},
     };
     for (size_t i = 0; i < sizeof(kw)/sizeof(kw[0]); i++)
         if (len == kw[i].len && memcmp(w, kw[i].w, len) == 0) return kw[i].t;
@@ -50,11 +51,51 @@ token_t lexer_next_token(lexer_t *l) {
         while (l->current != '\n' && l->current != '\0') advance(l);
         while (l->current == ' ' || l->current == '\t') advance(l);
     }
+    /* Block comments: /* ... *\/ (with nesting support) */
+    while (l->current == '/' && peek_char(l) == '*') {
+        advance(l); advance(l); /* skip /* */
+        int depth = 1;
+        while (depth > 0 && l->current != '\0') {
+            if (l->current == '/' && peek_char(l) == '*') {
+                advance(l); advance(l);
+                depth++;
+            } else if (l->current == '*' && peek_char(l) == '/') {
+                advance(l); advance(l);
+                depth--;
+            } else {
+                advance(l);
+            }
+        }
+        while (l->current == ' ' || l->current == '\t') advance(l);
+    }
     if (l->current == '\0') return token_create(TOKEN_EOF, "", 0, l->line, l->col);
     int line = l->line, col = l->col;
     if (l->current == '\n') { advance(l); return token_create(TOKEN_NEWLINE, "\\n", 1, line, col); }
     if (isdigit(l->current)) {
         size_t sp = l->pos;
+        /* Check for prefix: 0x (hex), 0o (octal), 0b (binary) */
+        if (l->current == '0' && l->pos + 1 < l->length) {
+            char next = l->source[l->pos + 1];
+            if (next == 'x' || next == 'X') {
+                /* Hex literal: 0x... */
+                advance(l); advance(l); /* skip 0x */
+                while (isxdigit(l->current) || l->current == '_') advance(l);
+                return token_create(TOKEN_INT_LIT, &l->source[sp], l->pos - sp, line, col);
+            }
+            if (next == 'o' || next == 'O') {
+                /* Octal literal: 0o... */
+                advance(l); advance(l); /* skip 0o */
+                while (((l->current >= '0' && l->current <= '7') || l->current == '_') && l->current != '\0') advance(l);
+                return token_create(TOKEN_INT_LIT, &l->source[sp], l->pos - sp, line, col);
+            }
+            if (next == 'b' || next == 'B') {
+                /* Binary literal: 0b... */
+                advance(l); advance(l); /* skip 0b */
+                while (((l->current == '0' || l->current == '1') || l->current == '_') && l->current != '\0') advance(l);
+                return token_create(TOKEN_INT_LIT, &l->source[sp], l->pos - sp, line, col);
+            }
+        }
+        /* Decimal literal */
         while (isdigit(l->current) || l->current == '_') advance(l);
         if (l->current == '.' && isdigit(peek_char(l))) {
             advance(l);
@@ -164,7 +205,7 @@ char *read_file(const char *path) {
     if (sz < 0) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_SET);
     char *buf = malloc(sz + 1);
-    if (!buf) { fclose(f); return NULL; }
+    if (!buf) { fclose(f); fprintf(stderr, "Out of memory\n"); return NULL; }
     size_t read = fread(buf, 1, sz, f);
     buf[read] = '\0';
     fclose(f);

@@ -3,9 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "parser.h"
-#include "codegen.h"  /* for MAX_IDENT_LEN, MAX_PARSE_DEPTH */
+#include "codegen.h"  /* for MAX_IDENT_LEN via config.h */
 
-#define ELANG_MAX_PARSE_DEPTH 2000
+/* MAX_PARSE_DEPTH from config.h */
 
 static void advance(parser_t *p) { p->current = p->peek; p->peek = lexer_next_token(&p->lexer); }
 static int match(parser_t *p, token_type_t t) { if (p->current.type == t) { advance(p); return 1; } return 0; }
@@ -16,7 +16,7 @@ static int expect(parser_t *p, token_type_t t) {
     p->has_error = 1;
     return 0;
 }
-static char *tok_str(token_t *t) { char *s = malloc(t->length + 1); memcpy(s, t->value, t->length); s[t->length] = '\0'; return s; }
+static char *tok_str(token_t *t) { char *s = SAFE_MALLOC(t->length + 1); memcpy(s, t->value, t->length); s[t->length] = '\0'; return s; }
 
 /* parse a simple type identifier (i64, string, etc.) without expression parsing */
 static ast_node_t *parse_type_ident(parser_t *p) {
@@ -50,8 +50,37 @@ static void skip_nl(parser_t *p) { while (p->current.type == TOKEN_NEWLINE) adva
 static ast_node_t *parse_primary(parser_t *p) {
     token_t t = p->current;
     switch (t.type) {
-        case TOKEN_INT_LIT: { ast_node_t *n = ast_new(AST_INT_LIT, t.line, t.col);
-            n->as.int_val = strtol(t.value, NULL, 0); advance(p); return n; }
+        case TOKEN_INT_LIT: {
+            ast_node_t *n = ast_new(AST_INT_LIT, t.line, t.col);
+            const char *val = t.value;
+            size_t vlen = t.length;
+            if (vlen > 2 && val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) {
+                /* Hex: 0x... */
+                char *end;
+                n->as.int_val = strtol(val + 2, &end, 16);
+            } else if (vlen > 2 && val[0] == '0' && (val[1] == 'o' || val[1] == 'O')) {
+                /* Octal: 0o... */
+                long result = 0;
+                for (size_t i = 2; i < vlen; i++) {
+                    if (val[i] == '_') continue;
+                    result = (result << 3) | (val[i] - '0');
+                }
+                n->as.int_val = result;
+            } else if (vlen > 2 && val[0] == '0' && (val[1] == 'b' || val[1] == 'B')) {
+                /* Binary: 0b... */
+                long result = 0;
+                for (size_t i = 2; i < vlen; i++) {
+                    if (val[i] == '_') continue;
+                    result = (result << 1) | (val[i] - '0');
+                }
+                n->as.int_val = result;
+            } else {
+                /* Decimal */
+                n->as.int_val = strtol(val, NULL, 0);
+            }
+            advance(p);
+            return n;
+        }
         case TOKEN_FLOAT_LIT: { ast_node_t *n = ast_new(AST_FLOAT_LIT, t.line, t.col);
             n->as.float_val = strtod(t.value, NULL); advance(p); return n; }
         case TOKEN_STRING_LIT: { ast_node_t *n = ast_new(AST_STRING_LIT, t.line, t.col);
@@ -87,10 +116,26 @@ static ast_node_t *parse_primary(parser_t *p) {
                 advance(p);
                 while (p->current.type != TOKEN_RPAREN && p->current.type != TOKEN_EOF) {
                     if (call->as.call.arg_count > 0) expect(p, TOKEN_COMMA);
-                    ast_node_t *arg = parse_expr(p);
-                    if (arg) { call->as.call.arg_count++;
-                        call->as.call.args = realloc(call->as.call.args, sizeof(void*) * call->as.call.arg_count);
-                        call->as.call.args[call->as.call.arg_count - 1] = arg; }
+                    /* Check for keyword argument: IDENT: value */
+                    if (p->current.type == TOKEN_IDENT && p->peek.type == TOKEN_COLON) {
+                        ast_node_t *kw = ast_new(AST_BINARY_OP, p->current.line, p->current.col);
+                        kw->as.binary.op = TOKEN_COLON;
+                        kw->as.binary.left = ast_new(AST_IDENT, p->current.line, p->current.col);
+                        kw->as.binary.left->as.ident.name = tok_str(&p->current);
+                        kw->as.binary.left->as.ident.name_len = p->current.length;
+                        advance(p); /* keyword name */
+                        advance(p); /* : */
+                        kw->as.binary.right = parse_expr(p);
+                        if (kw->as.binary.right) { call->as.call.arg_count++;
+                            call->as.call.args = SAFE_REALLOC(call->as.call.args, sizeof(void*) * call->as.call.arg_count);
+                            call->as.call.args[call->as.call.arg_count - 1] = kw; }
+                        else free_node(kw);
+                    } else {
+                        ast_node_t *arg = parse_expr(p);
+                        if (arg) { call->as.call.arg_count++;
+                            call->as.call.args = SAFE_REALLOC(call->as.call.args, sizeof(void*) * call->as.call.arg_count);
+                            call->as.call.args[call->as.call.arg_count - 1] = arg; }
+                    }
                 }
                 expect(p, TOKEN_RPAREN);
                 /* handle postfix ? after calls */
@@ -134,12 +179,12 @@ static ast_node_t *parse_primary(parser_t *p) {
             if (match(p, TOKEN_COMMA)) {
                 /* tuple: (a, b, c) */
                 ast_node_t *n = ast_new(AST_TUPLE, t.line, t.col);
-                n->as.tuple.elements = malloc(sizeof(void*) * 2);
+                n->as.tuple.elements = SAFE_MALLOC(sizeof(void*) * 2);
                 n->as.tuple.elements[0] = first; n->as.tuple.count = 1;
                 do { skip_nl(p);
                     ast_node_t *el = parse_expr(p);
                     n->as.tuple.count++;
-                    n->as.tuple.elements = realloc(n->as.tuple.elements, sizeof(void*) * n->as.tuple.count);
+                    n->as.tuple.elements = SAFE_REALLOC(n->as.tuple.elements, sizeof(void*) * n->as.tuple.count);
                     n->as.tuple.elements[n->as.tuple.count - 1] = el;
                 } while (match(p, TOKEN_COMMA));
                 expect(p, TOKEN_RPAREN); return n;
@@ -157,7 +202,7 @@ static ast_node_t *parse_primary(parser_t *p) {
                 ast_node_t *el = parse_expr(p);
                 if (el) {
                     n->as.array_literal.count++;
-                    n->as.array_literal.elements = realloc(n->as.array_literal.elements, sizeof(void*) * n->as.array_literal.count);
+                    n->as.array_literal.elements = SAFE_REALLOC(n->as.array_literal.elements, sizeof(void*) * n->as.array_literal.count);
                     n->as.array_literal.elements[n->as.array_literal.count - 1] = el;
                 }
             }
@@ -210,8 +255,8 @@ static ast_node_t *parse_primary(parser_t *p) {
                 while (p->current.type != TOKEN_RPAREN && p->current.type != TOKEN_EOF) {
                     if (n->as.closure.param_count > 0) expect(p, TOKEN_COMMA);
                     n->as.closure.param_count++;
-                    n->as.closure.params = realloc(n->as.closure.params, sizeof(char*) * n->as.closure.param_count);
-                    n->as.closure.param_lens = realloc(n->as.closure.param_lens, sizeof(size_t) * n->as.closure.param_count);
+                    n->as.closure.params = SAFE_REALLOC(n->as.closure.params, sizeof(char*) * n->as.closure.param_count);
+                    n->as.closure.param_lens = SAFE_REALLOC(n->as.closure.param_lens, sizeof(size_t) * n->as.closure.param_count);
                     n->as.closure.params[n->as.closure.param_count - 1] = tok_str(&p->current);
                     n->as.closure.param_lens[n->as.closure.param_count - 1] = p->current.length;
                     advance(p);
@@ -220,8 +265,8 @@ static ast_node_t *parse_primary(parser_t *p) {
             } else {
                 /* single param without parens: fn x => ... */
                 n->as.closure.param_count = 1;
-                n->as.closure.params = malloc(sizeof(char*));
-                n->as.closure.param_lens = malloc(sizeof(size_t));
+                n->as.closure.params = SAFE_MALLOC(sizeof(char*));
+                n->as.closure.param_lens = SAFE_MALLOC(sizeof(size_t));
                 n->as.closure.params[0] = tok_str(&p->current);
                 n->as.closure.param_lens[0] = p->current.length;
                 advance(p);
@@ -241,7 +286,7 @@ static ast_node_t *parse_primary(parser_t *p) {
 }
 
 static ast_node_t *parse_binary(parser_t *p, int min_prec) {
-    if (++p->depth > ELANG_MAX_PARSE_DEPTH) {
+    if (++p->depth > MAX_PARSE_DEPTH) {
         fprintf(stderr, "Parse error at %d:%d: expression nested too deeply\n",
                 p->current.line, p->current.col);
         p->has_error = 1;
@@ -285,7 +330,7 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
             call->as.call.arg_count = 0;
             /* first arg = the object (self) */
             call->as.call.arg_count = 1;
-            call->as.call.args = malloc(sizeof(ast_node_t*));
+            call->as.call.args = SAFE_MALLOC(sizeof(ast_node_t*));
             call->as.call.args[0] = left;
             /* parse remaining args */
             while (p->current.type != TOKEN_RPAREN && p->current.type != TOKEN_EOF) {
@@ -293,7 +338,7 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
                 ast_node_t *arg = parse_expr(p);
                 if (arg) {
                     call->as.call.arg_count++;
-                    call->as.call.args = realloc(call->as.call.args,
+                    call->as.call.args = SAFE_REALLOC(call->as.call.args,
                         sizeof(ast_node_t*) * call->as.call.arg_count);
                     call->as.call.args[call->as.call.arg_count - 1] = arg;
                 }
@@ -375,7 +420,7 @@ static ast_node_t *parse_let(parser_t *p) {
         while (p->current.type != TOKEN_RPAREN && p->current.type != TOKEN_EOF) {
             if (tup->as.tuple_assign.name_count > 0) expect(p, TOKEN_COMMA);
             tup->as.tuple_assign.name_count++;
-            tup->as.tuple_assign.names = realloc(tup->as.tuple_assign.names, sizeof(char*) * tup->as.tuple_assign.name_count);
+            tup->as.tuple_assign.names = SAFE_REALLOC(tup->as.tuple_assign.names, sizeof(char*) * tup->as.tuple_assign.name_count);
             tup->as.tuple_assign.names[tup->as.tuple_assign.name_count - 1] = tok_str(&p->current);
             advance(p);
         }
@@ -426,9 +471,9 @@ static ast_node_t *parse_for(parser_t *p) {
 
     /* parse first variable */
     n->as.for_stmt.var_count = 1;
-    n->as.for_stmt.vars = malloc(sizeof(char*));
-    n->as.for_stmt.var_lens = malloc(sizeof(size_t));
-    n->as.for_stmt.var_types = malloc(sizeof(ast_node_t*));
+    n->as.for_stmt.vars = SAFE_MALLOC(sizeof(char*));
+    n->as.for_stmt.var_lens = SAFE_MALLOC(sizeof(size_t));
+    n->as.for_stmt.var_types = SAFE_MALLOC(sizeof(ast_node_t*));
     n->as.for_stmt.vars[0] = tok_str(&p->current);
     n->as.for_stmt.var_lens[0] = p->current.length;
     advance(p);
@@ -443,9 +488,9 @@ static ast_node_t *parse_for(parser_t *p) {
     if (p->current.type == TOKEN_COMMA) {
         advance(p);
         n->as.for_stmt.var_count = 2;
-        n->as.for_stmt.vars = realloc(n->as.for_stmt.vars, sizeof(char*) * 2);
-        n->as.for_stmt.var_lens = realloc(n->as.for_stmt.var_lens, sizeof(size_t) * 2);
-        n->as.for_stmt.var_types = realloc(n->as.for_stmt.var_types, sizeof(ast_node_t*) * 2);
+        n->as.for_stmt.vars = SAFE_REALLOC(n->as.for_stmt.vars, sizeof(char*) * 2);
+        n->as.for_stmt.var_lens = SAFE_REALLOC(n->as.for_stmt.var_lens, sizeof(size_t) * 2);
+        n->as.for_stmt.var_types = SAFE_REALLOC(n->as.for_stmt.var_types, sizeof(ast_node_t*) * 2);
         n->as.for_stmt.vars[1] = tok_str(&p->current);
         n->as.for_stmt.var_lens[1] = p->current.length;
         advance(p);
@@ -465,7 +510,7 @@ static ast_node_t *parse_for(parser_t *p) {
         advance(p); skip_nl(p);
         ast_node_t *body_stmt = parse_stmt(p);
         ast_node_t *blk = ast_new(AST_BLOCK, body_stmt->line, body_stmt->col);
-        blk->as.block.stmts = malloc(sizeof(void*));
+        blk->as.block.stmts = SAFE_MALLOC(sizeof(void*));
         blk->as.block.stmts[0] = body_stmt; blk->as.block.count = 1;
         n->as.for_stmt.body = blk;
     } else {
@@ -486,7 +531,7 @@ static ast_node_t *parse_match(parser_t *p) {
         if (!match(p, TOKEN_FAT_ARROW)) { free_node(pat); continue; }
         skip_nl(p); ast_node_t *res = parse_expr(p);
         n->as.match_expr.case_count++;
-        n->as.match_expr.cases = realloc(n->as.match_expr.cases,
+        n->as.match_expr.cases = SAFE_REALLOC(n->as.match_expr.cases,
             sizeof(struct { ast_node_t *pattern, *result; }) * n->as.match_expr.case_count);
         n->as.match_expr.cases[n->as.match_expr.case_count - 1].pattern = pat;
         n->as.match_expr.cases[n->as.match_expr.case_count - 1].result = res;
@@ -504,12 +549,16 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
         if (n->as.fn_decl.param_count > 0) expect(p, TOKEN_COMMA);
         if (p->current.type == TOKEN_IDENT) {
             n->as.fn_decl.param_count++;
-            n->as.fn_decl.params = realloc(n->as.fn_decl.params,
-                sizeof(struct { char *name; size_t name_len; ast_node_t *type_expr; }) * n->as.fn_decl.param_count);
+            { size_t old_count = n->as.fn_decl.param_count - 1;
+              n->as.fn_decl.params = SAFE_REALLOC(n->as.fn_decl.params,
+                  sizeof(n->as.fn_decl.params[0]) * n->as.fn_decl.param_count);
+              /* Zero the newly added element */
+              memset(&n->as.fn_decl.params[old_count], 0, sizeof(n->as.fn_decl.params[0])); }
             int last = n->as.fn_decl.param_count - 1;
             n->as.fn_decl.params[last].name = tok_str(&p->current); n->as.fn_decl.params[last].name_len = p->current.length;
             advance(p);
-            n->as.fn_decl.params[last].type_expr = match(p, TOKEN_COLON) ? parse_expr(p) : NULL;
+            n->as.fn_decl.params[last].type_expr = match(p, TOKEN_COLON) ? parse_type_ident(p) : NULL;
+            n->as.fn_decl.params[last].default_value = match(p, TOKEN_ASSIGN) ? parse_expr(p) : NULL;
         }
     }
     expect(p, TOKEN_RPAREN);
@@ -538,7 +587,7 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
         advance(p); skip_nl(p);
         ast_node_t *body_stmt = parse_stmt(p);
         ast_node_t *blk = ast_new(AST_BLOCK, body_stmt->line, body_stmt->col);
-        blk->as.block.stmts = malloc(sizeof(void*));
+        blk->as.block.stmts = SAFE_MALLOC(sizeof(void*));
         /* wrap expression statements in implicit return */
         if (body_stmt->type != AST_RETURN && body_stmt->type != AST_LET &&
             body_stmt->type != AST_WHILE && body_stmt->type != AST_FOR &&
@@ -611,7 +660,7 @@ static ast_node_t *parse_struct(parser_t *p) {
     while (p->current.type != TOKEN_RBRACE && p->current.type != TOKEN_EOF) {
         skip_nl(p); if (p->current.type == TOKEN_RBRACE) break;
         n->as.struct_decl.field_count++;
-        n->as.struct_decl.fields = realloc(n->as.struct_decl.fields,
+        n->as.struct_decl.fields = SAFE_REALLOC(n->as.struct_decl.fields,
             sizeof(struct { char *name; size_t name_len; ast_node_t *type_expr; }) * n->as.struct_decl.field_count);
         int last = n->as.struct_decl.field_count - 1;
         n->as.struct_decl.fields[last].name = tok_str(&p->current); n->as.struct_decl.fields[last].name_len = p->current.length;
@@ -628,8 +677,47 @@ static ast_node_t *parse_struct(parser_t *p) {
 
 static ast_node_t *parse_import(parser_t *p) {
     ast_node_t *n = ast_new(AST_IMPORT_DECL, p->current.line, p->current.col);
-    advance(p); n->as.import.path = tok_str(&p->current); n->as.import.path_len = p->current.length;
-    advance(p); return n;
+    advance(p); /* consume 'import' */
+
+    /* determine if project module (quoted) or stdlib (bare name) */
+    if (p->current.type == TOKEN_STRING_LIT) {
+        /* import "path" — project module */
+        n->as.import.path = tok_str(&p->current);
+        n->as.import.path_len = p->current.length;
+        n->as.import.is_stdlib = 0;
+        advance(p);
+    } else if (p->current.type == TOKEN_IDENT) {
+        /* import name — standard library */
+        n->as.import.path = tok_str(&p->current);
+        n->as.import.path_len = p->current.length;
+        n->as.import.is_stdlib = 1;
+        advance(p);
+    } else {
+        fprintf(stderr, "Parse error at %d:%d: expected module name after 'import'\n",
+            p->current.line, p->current.col);
+        p->has_error = 1;
+        n->as.import.path = strdup("");
+        n->as.import.path_len = 0;
+        n->as.import.is_stdlib = 0;
+    }
+
+    /* optional: as alias */
+    n->as.import.alias = NULL;
+    n->as.import.alias_len = 0;
+    if (p->current.type == TOKEN_AS) {
+        advance(p); /* consume 'as' */
+        if (p->current.type == TOKEN_IDENT) {
+            n->as.import.alias = tok_str(&p->current);
+            n->as.import.alias_len = p->current.length;
+            advance(p);
+        } else {
+            fprintf(stderr, "Parse error at %d:%d: expected alias name after 'as'\n",
+                p->current.line, p->current.col);
+            p->has_error = 1;
+        }
+    }
+
+    return n;
 }
 
 static ast_node_t *parse_enum(parser_t *p) {
@@ -651,7 +739,7 @@ static ast_node_t *parse_enum(parser_t *p) {
         if (p->current.type == TOKEN_RBRACE) break;
         /* parse variant: Name or Name(Type) or Name = value */
         n->as.enum_decl.variant_count++;
-        n->as.enum_decl.variants = realloc(n->as.enum_decl.variants,
+        n->as.enum_decl.variants = SAFE_REALLOC(n->as.enum_decl.variants,
             sizeof(struct { char *name; size_t name_len; ast_node_t *value; })
             * n->as.enum_decl.variant_count);
         int last = n->as.enum_decl.variant_count - 1;
@@ -688,7 +776,7 @@ static ast_node_t *parse_impl(parser_t *p) {
             ast_node_t *method = parse_fn_decl(p);
             if (method) {
                 n->as.impl_decl.method_count++;
-                n->as.impl_decl.methods = realloc(n->as.impl_decl.methods,
+                n->as.impl_decl.methods = SAFE_REALLOC(n->as.impl_decl.methods,
                     sizeof(ast_node_t*) * n->as.impl_decl.method_count);
                 n->as.impl_decl.methods[n->as.impl_decl.method_count - 1] = method;
             }
@@ -721,7 +809,7 @@ static ast_node_t *parse_block(parser_t *p) {
         skip_nl(p); if (p->current.type == TOKEN_RBRACE) break;
         ast_node_t *s = parse_stmt(p);
         if (s) { n->as.block.count++;
-            n->as.block.stmts = realloc(n->as.block.stmts, sizeof(void*) * n->as.block.count);
+            n->as.block.stmts = SAFE_REALLOC(n->as.block.stmts, sizeof(void*) * n->as.block.count);
             n->as.block.stmts[n->as.block.count - 1] = s; }
     }
     expect(p, TOKEN_RBRACE); return n;
@@ -741,16 +829,6 @@ static ast_node_t *parse_stmt(parser_t *p) {
         case TOKEN_IMPL: return parse_impl(p);
         case TOKEN_IMPORT: return parse_import(p);
         case TOKEN_EXPORT: return parse_export(p);
-        case TOKEN_USING: {
-            ast_node_t *n = ast_new(AST_USING, p->current.line, p->current.col);
-            advance(p);
-            if (p->current.type == TOKEN_STRING_LIT) {
-                n->as.using_decl.path = tok_str(&p->current);
-                n->as.using_decl.path_len = p->current.length;
-                advance(p);
-            }
-            return n;
-        }
         case TOKEN_DEFER: {
             ast_node_t *n = ast_new(AST_DEFER, p->current.line, p->current.col);
             advance(p); skip_nl(p);
@@ -779,12 +857,27 @@ void parser_init(parser_t *p, const char *source) {
 ast_node_t *parser_parse(parser_t *p) {
     ast_node_t *prog = ast_new(AST_PROGRAM, 1, 1);
     prog->as.program.declarations = NULL; prog->as.program.count = 0;
-    while (p->current.type != TOKEN_EOF && !p->has_error) {
+    while (p->current.type != TOKEN_EOF) {
         skip_nl(p); if (p->current.type == TOKEN_EOF) break;
         ast_node_t *d = parse_stmt(p);
         if (d) { prog->as.program.count++;
-            prog->as.program.declarations = realloc(prog->as.program.declarations, sizeof(void*) * prog->as.program.count);
+            prog->as.program.declarations = SAFE_REALLOC(prog->as.program.declarations, sizeof(void*) * prog->as.program.count);
             prog->as.program.declarations[prog->as.program.count - 1] = d; }
+        /* Error recovery: skip to synchronization point */
+        if (p->has_error) {
+            while (p->current.type != TOKEN_EOF &&
+                   p->current.type != TOKEN_SEMICOLON &&
+                   p->current.type != TOKEN_RBRACE &&
+                   p->current.type != TOKEN_NEWLINE) {
+                p->current = p->peek;
+                p->peek = lexer_next_token(&p->lexer);
+            }
+            if (p->current.type == TOKEN_SEMICOLON) {
+                p->current = p->peek;
+                p->peek = lexer_next_token(&p->lexer);
+            }
+            p->has_error = 0; /* reset for next statement */
+        }
     }
     return prog;
 }
