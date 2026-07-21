@@ -41,7 +41,7 @@ echo ""
 run_test "hello" "examples/01_hello_world.el" "Hello, ELang!"
 
 # Phase 2 tests: loop, break, continue
-run_test "loop" "test_loop.el" "$(printf '5\n52\n10')"
+run_test "loop" "examples/18_loop_break_continue.el" "$(printf '5\n52\n10')"
 
 # Existing examples (just verify they compile and run)
 for f in examples/0[2-9]_*.el examples/1[0-9]_*.el; do
