@@ -81,12 +81,9 @@ check_deps() {
 
 # ── Build ─────────────────────────────────────────────────────────────
 build() {
-    if [ ! -f "$SCRIPT_DIR/bin/elc" ]; then
-        BUILD=1
-    fi
-
     if [ "$BUILD" -eq 1 ]; then
         info "Building compiler..."
+        make -C "$SCRIPT_DIR" -s clean
         make -C "$SCRIPT_DIR" -s
         info "Building runtime libraries..."
         make -C "$SCRIPT_DIR/lib" -s
