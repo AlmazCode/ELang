@@ -164,7 +164,8 @@ usage() {
     echo "  elang -check <file.el>     Type check only"
     echo "  elang -t <file.el>         Show tokens"
     echo "  elang -a <file.el>         Show AST"
-    echo "  elang -h                   Show this help"
+    echo "  elang -v, --version        Show version"
+    echo "  elang -h, --help           Show this help"
 }
 
 COMPILE_ONLY=0
@@ -176,6 +177,7 @@ EXTRA_ARGS=""
 while [ \$# -gt 0 ]; do
     case "\$1" in
         -h|--help) usage; exit 0 ;;
+        -v|--version) echo "elang v${ELANG_VERSION}"; exit 0 ;;
         -c) COMPILE_ONLY=1; shift ;;
         -check) TYPE_CHECK=1; shift ;;
         -o) OUTPUT="\$2"; shift 2 ;;
