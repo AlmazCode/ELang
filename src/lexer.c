@@ -33,7 +33,7 @@ static token_type_t check_keyword(const char *w, size_t len) {
         {"alloc",5,TOKEN_ALLOC},{"free",4,TOKEN_FREE},{"syscall",7,TOKEN_SYSCALL},
         {"panic",5,TOKEN_PANIC},{"catch",5,TOKEN_CATCH},{"assert",6,TOKEN_ASSERT},
         {"Ok",2,TOKEN_OK},{"Err",3,TOKEN_ERR},{"Result",6,TOKEN_RESULT},
-        {"when",4,TOKEN_WHEN},{"defer",5,TOKEN_DEFER},
+        {"defer",5,TOKEN_DEFER},
     };
     for (size_t i = 0; i < sizeof(kw)/sizeof(kw[0]); i++)
         if (len == kw[i].len && memcmp(w, kw[i].w, len) == 0) return kw[i].t;
@@ -51,9 +51,9 @@ token_t lexer_next_token(lexer_t *l) {
         while (l->current != '\n' && l->current != '\0') advance(l);
         while (l->current == ' ' || l->current == '\t') advance(l);
     }
-    /* Block comments: /* ... *\/ (with nesting support) */
+    /* Block comments: /star ... star/backslash (with nesting support) */
     while (l->current == '/' && peek_char(l) == '*') {
-        advance(l); advance(l); /* skip /* */
+        advance(l); advance(l); /* skip /star */
         int depth = 1;
         while (depth > 0 && l->current != '\0') {
             if (l->current == '/' && peek_char(l) == '*') {
@@ -204,8 +204,7 @@ char *read_file(const char *path) {
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_SET);
-    char *buf = malloc(sz + 1);
-    if (!buf) { fclose(f); fprintf(stderr, "Out of memory\n"); return NULL; }
+    char *buf = SAFE_MALLOC(sz + 1);
     size_t read = fread(buf, 1, sz, f);
     buf[read] = '\0';
     fclose(f);

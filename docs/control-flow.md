@@ -161,15 +161,59 @@ match expression возвращает значение — آخرнее выра
 
 ## break и continue
 
-В текущей версии `break` и `continue` **не реализованы** в codegen. Лексер распознаёт токены, но парсер их не обрабатывает.
-
-Для выхода из цикла используйте `while` с флагом:
+`break` выходит из цикла, `continue` пропускает текущую итерацию.
 
 ```elang
-let mut found: i64 = 0
+// break — выход из while
 let mut i: i64 = 0
-while i < arr.len && found == 0 {
-    if arr[i] == target { found = 1 }
+while i < 100 {
+    if i == 5 { break }
     i = i + 1
+}
+// i = 5
+```
+
+```elang
+// continue — пропуск итерации
+let sum: i64 = 0
+let j: i64 = 1
+while j <= 10 {
+    if j == 3 {
+        j = j + 1
+        continue
+    }
+    sum = sum + j
+    j = j + 1
+}
+// sum = 1+2+4+5+6+7+8+9+10 = 52
+```
+
+```elang
+// break в for
+for i: i64 in 0..100 {
+    if arr[i] == target { break }
+}
+```
+
+## loop
+
+`loop` — бесконечный цикл. Выход только через `break`.
+
+```elang
+let i: i64 = 0
+loop {
+    i = i + 1
+    if i == 10 { break }
+}
+// i = 10
+```
+
+Полезно для чтения ввода до определённого условия:
+
+```elang
+loop {
+    let input: string = read_line()
+    if input == "quit" { break }
+    process(input)
 }
 ```

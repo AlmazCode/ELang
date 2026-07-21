@@ -629,6 +629,7 @@ void sem_fold_constants(ast_node_t *node) {
                 sem_fold_constants(node->as.array_literal.elements[i]);
             break;
         case AST_LEN_EXPR: sem_fold_constants(node->as.len_expr.operand); break;
+        case AST_LOOP: sem_fold_constants(node->as.loop_stmt.body); break;
         case AST_MATCH:
             sem_fold_constants(node->as.match_expr.value);
             for (int i = 0; i < node->as.match_expr.case_count; i++) {
@@ -812,7 +813,19 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
                 sem_fold_constants(node->as.match_expr.cases[i].pattern);
                 sem_fold_constants(node->as.match_expr.cases[i].result);
             }
-            (void)val_type;
+            /* Check exhaustive coverage for Result<T, E> matches */
+            if (val_type && val_type->kind == TYPE_RESULT) {
+                int has_ok = 0, has_err = 0;
+                for (int i = 0; i < node->as.match_expr.case_count; i++) {
+                    ast_node_t *pat = node->as.match_expr.cases[i].pattern;
+                    if (pat->type == AST_OK_EXPR) has_ok = 1;
+                    if (pat->type == AST_ERR_EXPR) has_err = 1;
+                }
+                if (!has_ok)
+                    sem_error(ctx, node->line, node->col, "match missing Ok(_) case");
+                if (!has_err)
+                    sem_error(ctx, node->line, node->col, "match missing Err(_) case");
+            }
             break;
         }
         case AST_DEFER:

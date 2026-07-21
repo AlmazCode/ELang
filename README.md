@@ -1,4 +1,4 @@
-# ELang v0.44.0
+# ELang v0.45.0
 
 **Статически типизированный, компилируемый системный язык программирования с expression-oriented синтаксисом.**
 
@@ -44,6 +44,7 @@ elang examples/01_hello_world.el
 - **Pipeline `\|>`** — цепочки вызовов
 - **Result\<T, E\>** — типобезопасная обработка ошибок с `?` оператором
 - **Expression-oriented** — `if`, `match` возвращают значения
+- **loop / break / continue** — бесконечные циклы с выходом
 - **Массивы** — heap-allocated, bounds checking, map/filter/reduce
 - **Defer** — автоматическая очистка ресурсов
 - **Нулевой runtime** — bump allocator, без GC, без VM

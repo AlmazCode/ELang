@@ -79,6 +79,9 @@ void free_node(ast_node_t *n) {
         case AST_IMPL_DECL: free(n->as.impl_decl.type_name);
             for (int mi = 0; mi < n->as.impl_decl.method_count; mi++) free_node(n->as.impl_decl.methods[mi]);
             free(n->as.impl_decl.methods); break;
+        case AST_LOOP: free_node(n->as.loop_stmt.body); break;
+        case AST_BREAK: break;
+        case AST_CONTINUE: break;
         case AST_CLOSURE: for (int ci = 0; ci < n->as.closure.param_count; ci++) free(n->as.closure.params[ci]);
             free(n->as.closure.params); free(n->as.closure.param_lens);
             free_node(n->as.closure.body);

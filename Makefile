@@ -1,7 +1,7 @@
 # ELang Compiler
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
-SRCS = src/token.c src/lexer.c src/ast.c src/parser.c src/semantics.c src/codegen.c src/main.c
+SRCS = src/token.c src/lexer.c src/ast.c src/parser.c src/semantics.c src/codegen.c src/codegen_helpers.c src/codegen_call.c src/main.c
 OBJS = $(SRCS:.c=.o)
 BIN = bin/elc
 

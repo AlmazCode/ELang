@@ -591,6 +591,7 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
         /* wrap expression statements in implicit return */
         if (body_stmt->type != AST_RETURN && body_stmt->type != AST_LET &&
             body_stmt->type != AST_WHILE && body_stmt->type != AST_FOR &&
+            body_stmt->type != AST_LOOP && body_stmt->type != AST_BREAK && body_stmt->type != AST_CONTINUE &&
             body_stmt->type != AST_STRUCT_DECL &&
             body_stmt->type != AST_ENUM_DECL && body_stmt->type != AST_IMPORT_DECL &&
             body_stmt->type != AST_DEFER && body_stmt->type != AST_ASSIGN &&
@@ -616,6 +617,7 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
             ast_node_t *last = body->as.block.stmts[body->as.block.count - 1];
             if (last && last->type != AST_RETURN && last->type != AST_LET &&
                 last->type != AST_WHILE && last->type != AST_FOR &&
+                last->type != AST_LOOP && last->type != AST_BREAK && last->type != AST_CONTINUE &&
                 last->type != AST_STRUCT_DECL && last->type != AST_ENUM_DECL &&
                 last->type != AST_IMPORT_DECL && last->type != AST_DEFER &&
                 last->type != AST_ASSIGN && last->type != AST_FN_DECL) {
@@ -822,6 +824,22 @@ static ast_node_t *parse_stmt(parser_t *p) {
         case TOKEN_IF: return parse_if(p);
         case TOKEN_WHILE: return parse_while(p);
         case TOKEN_FOR: return parse_for(p);
+        case TOKEN_LOOP: {
+            ast_node_t *n = ast_new(AST_LOOP, p->current.line, p->current.col);
+            advance(p); skip_nl(p);
+            n->as.loop_stmt.body = parse_block(p);
+            return n;
+        }
+        case TOKEN_BREAK: {
+            ast_node_t *n = ast_new(AST_BREAK, p->current.line, p->current.col);
+            advance(p);
+            return n;
+        }
+        case TOKEN_CONTINUE: {
+            ast_node_t *n = ast_new(AST_CONTINUE, p->current.line, p->current.col);
+            advance(p);
+            return n;
+        }
         case TOKEN_MATCH: return parse_match(p);
         case TOKEN_FN: return parse_fn_decl(p);
         case TOKEN_STRUCT: return parse_struct(p);

@@ -763,6 +763,56 @@ print_arr_bool:
     pop rbp
     ret
 
+; print_arr_f64(rdi=arr_ptr)
+; Print array of f64 as [1.000000, 2.000000]
+global print_arr_f64
+print_arr_f64:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_open]
+    mov rdx, 1
+    syscall
+
+    mov r13, [rbx - 8]
+    test r13, r13
+    jz .paf_done
+
+    xor r12, r12
+.paf_loop:
+    ; load float bits and call print_f64
+    mov rdi, [rbx + r12*8]
+    call print_f64
+    inc r12
+    cmp r12, r13
+    jge .paf_done
+    ; print ", "
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_sep]
+    mov rdx, 2
+    syscall
+    jmp .paf_loop
+
+.paf_done:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [arr_close]
+    mov rdx, 1
+    syscall
+
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
 ; exit(int code)
 global exit
 exit:

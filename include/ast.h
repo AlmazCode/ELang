@@ -14,7 +14,7 @@ typedef enum {
     AST_BREAK, AST_CONTINUE, AST_BLOCK, AST_LET, AST_ASSIGN, AST_RANGE,
     AST_FN_DECL, AST_STRUCT_DECL, AST_ENUM_DECL, AST_IMPORT_DECL,
     AST_MATCH, AST_STRUCT_LITERAL, AST_ENUM_LITERAL, AST_OK_EXPR, AST_ERR_EXPR,
-    AST_PIPE, AST_DEFER, AST_WHEN, AST_TUPLE, AST_TUPLE_ASSIGN,
+    AST_PIPE, AST_DEFER, AST_TUPLE, AST_TUPLE_ASSIGN,
     AST_PROGRAM,
     AST_TRY_EXPR, AST_CATCH_EXPR, AST_PANIC_EXPR, AST_ASSERT_EXPR,
     AST_ARRAY_LITERAL, AST_LEN_EXPR,
@@ -68,7 +68,6 @@ struct ast_node {
         struct { ast_node_t *value; } err_expr;
         struct { ast_node_t *left, *right; } pipe;
         struct { ast_node_t *expr; } defer_stmt;
-        struct { ast_node_t *condition, *then_block, *else_block; } when_expr;
         struct { ast_node_t **elements; int count; } tuple;
         struct { char **names; int name_count; ast_node_t *value; } tuple_assign;
         struct { ast_node_t **declarations; int count; } program;
@@ -84,6 +83,7 @@ struct ast_node {
         struct { ast_node_t *ok_type; ast_node_t *err_type; } result_type; /* Result<T, E> */
         struct { char *type_name; size_t type_name_len;
             ast_node_t **methods; int method_count; } impl_decl; /* impl Type { fn ... } */
+        struct { ast_node_t *body; } loop_stmt;        /* loop { ... } */
     } as;
 };
 

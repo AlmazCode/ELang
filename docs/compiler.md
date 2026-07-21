@@ -90,15 +90,24 @@ elc [опции] <файл.el>
 - Scope analysis: проверка области видимости переменных
 - Function table: кросс-модульный поиск функций
 
-### 5. Codegen (codegen.c)
+### 5. Codegen (codegen.c + codegen_helpers.c + codegen_call.c)
 
-Генерация x86_64 NASM ассемблера. Включает:
+Генерация x86_64 NASM ассемблера. Разделён на 3 модуля:
+
+| Модуль | Ответственность |
+|--------|-----------------|
+| `codegen.c` | gen_expr, gen_stmt, gen_node, codegen_program |
+| `codegen_helpers.c` | emit, symbols, scopes, strings, floats, defer, collect |
+| `codegen_call.c` | emit_call, emit_closure_call, resolve_call_args |
+
+Включает:
 - Все арифметические операции (int и float через SSE2)
 - Функции с closure convention
 - Closures с environment struct
 - Struct heap allocation
 - Enum auto-методы
 - Match expressions
+- loop / break / continue
 - Defer statements
 - Defer + ? interaction
 - Universal print dispatch
@@ -115,11 +124,11 @@ elc [опции] <файл.el>
 ## Константы (config.h)
 
 ```c
-#define MAX_IDENT_LEN    64
+#define MAX_IDENT_LEN    128
 #define MAX_PATH_LEN     1024
 #define MAX_MODULES      64
 #define MAX_PARSE_DEPTH  2000
-#define ELANG_VERSION    "0.44.0"
+#define ELANG_VERSION    "0.45.0"
 ```
 
 ## Безопасные макросы
@@ -155,7 +164,7 @@ make
 ```makefile
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
-SRCS = src/token.c src/lexer.c src/ast.c src/parser.c src/semantics.c src/codegen.c src/main.c
+SRCS = src/token.c src/lexer.c src/ast.c src/parser.c src/semantics.c src/codegen.c src/codegen_helpers.c src/codegen_call.c src/main.c
 ```
 
 ## Требования
@@ -180,7 +189,7 @@ SRCS = src/token.c src/lexer.c src/ast.c src/parser.c src/semantics.c src/codege
 
 | Метрика | Значение |
 |---------|----------|
-| Версия | v0.44.0 |
-| Строк кода (C) | ~6500 |
-| Строк asm (core) | ~1500 |
-| Файлов исходников | 14 (.c/.h) + 3 (.asm) |
+| Версия | v0.45.0 |
+| Строк кода (C) | ~7000 |
+| Строк asm (core) | ~1550 |
+| Файлов исходников | 17 (.c/.h) + 3 (.asm) |

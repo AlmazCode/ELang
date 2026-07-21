@@ -124,6 +124,12 @@ static void print_ast(ast_node_t *n, int indent) {
             printf(")\n");
             print_ast(n->as.for_stmt.body, indent+1);
             break;
+        case AST_LOOP:
+            printf("Loop\n");
+            print_ast(n->as.loop_stmt.body, indent+1);
+            break;
+        case AST_BREAK: printf("Break\n"); break;
+        case AST_CONTINUE: printf("Continue\n"); break;
         case AST_BLOCK:
             printf("Block(%d)\n", n->as.block.count);
             for (int i = 0; i < n->as.block.count; i++)
@@ -439,22 +445,6 @@ static int run_cmd(const char *cmd) {
     if (pid == 0) {
         execvp(argv[0], argv);
         fprintf(stderr, "Error: cannot exec '%s'\n", argv[0]);
-        _exit(127);
-    } else if (pid > 0) {
-        int status;
-        waitpid(pid, &status, 0);
-        if (WIFEXITED(status)) return WEXITSTATUS(status);
-        return -1;
-    }
-    return -1;
-}
-
-/* Run a shell command (for build scripts with && and pipes) */
-static int run_shell(const char *cmd) {
-    fprintf(stderr, "  %s\n", cmd);
-    pid_t pid = fork();
-    if (pid == 0) {
-        execlp("sh", "sh", "-c", cmd, NULL);
         _exit(127);
     } else if (pid > 0) {
         int status;

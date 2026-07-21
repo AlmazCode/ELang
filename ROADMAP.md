@@ -1,4 +1,4 @@
-# ELang v0.44.0 Roadmap
+# ELang v0.45.0 Roadmap
 
 Автор: **AlmazCode**
 
@@ -26,6 +26,8 @@
 - **hex/octal/binary literals** — `0xFF`, `0o77`, `0b1010`
 - **block comments** — `/* ... */` с вложенностью
 - **error recovery** — парсер продолжает после ошибок
+- **loop/break/continue** — бесконечные циклы с выходом
+- **forward declarations** — вызов функций до объявления
 
 ---
 
@@ -181,13 +183,21 @@ print("x", "y", sep: " - ")   // x - y
 - [x] Error recovery (parser) ✅
 
 ### Should-fix
-- [ ] Разделить codegen.c на модули (expr/stmt/print/array) — 1900+ строк, монолитный
+- [x] read_file → SAFE_MALLOC ✅
+- [x] Дедупликация extern в codegen ✅
+- [x] print_arr_f64 в core.asm ✅
+- [x] loop/break/continue ✅
+- [x] Forward declarations ✅
+- [x] Smoke test framework ✅
+- [x] Удаление unused variables (left_is_float, saved, run_shell) ✅
+- [x] Fix sign-compare warnings ✅
+- [x] MAX_IDENT_LEN 64→128 ✅
+- [x] Удаление dead code (when token) ✅
+- [ ] Разделить codegen.c на модули (expr/stmt/print/array) — 2100+ строк, монолитный
 - [ ] Рефакторинг emit_call/emit_closure_call (70% дублирования)
 - [ ] Match exhaustive check (покрытие вариантов enum)
 - [ ] Unsigned division (нет type tracking для u* типов)
-- [ ] RBX usage в function bodies (callee-saved violation)
 - [ ] Label patching в codegen (sub rsp placeholder)
-- [ ] Unit tests
 
 ---
 

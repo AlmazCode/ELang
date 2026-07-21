@@ -26,6 +26,8 @@ typedef struct {
     char **extern_names;
     int extern_count;
     int in_return_expr;
+    int current_loop_end;   /* label of current loop's end (for break) */
+    int current_loop_inc;   /* label of current loop's continue target */
     long sub_rsp_pos;   /* file offset of sub rsp placeholder for patching */
     const char *source_file; /* source filename for panic location */
     ast_node_t *prog;   /* AST root for function lookup */

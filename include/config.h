@@ -6,13 +6,13 @@
 #include <stdlib.h>
 
 /* --- Shared constants --- */
-#define MAX_IDENT_LEN       64
+#define MAX_IDENT_LEN       128
 #define MAX_PATH_LEN        1024
 #define MAX_MODULES         64
 #define MAX_PARSE_DEPTH     2000
 
 /* --- Version --- */
-#define ELANG_VERSION       "0.44.0"
+#define ELANG_VERSION       "0.45.0"
 
 /* --- Safe allocation macros --- */
 #define CHECK_ALLOC(ptr) do { \
