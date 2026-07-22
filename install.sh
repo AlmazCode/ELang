@@ -8,7 +8,7 @@ set -e
 PREFIX="/usr/local"
 BUILD=1
 UNINSTALL=0
-ELANG_VERSION="0.45.0"
+ELANG_VERSION="0.46.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── Colors ────────────────────────────────────────────────────────────
