@@ -110,19 +110,34 @@ fn divide(a: i64, b: i64) -> Result<i64, i64> {
 Heap-allocated, bounds-checked. Литералы: `[1, 2, 3]`.
 
 ```elang
-let arr: [i64] = [10, 20, 30]
+let arr: [i64] = [10, 20, 30]         // динамический массив
+let fixed: [i64; 3] = [10, 20, 30]    // фиксированный массив из 3 элементов
+let nested: [[i64; 3]; 2] = [[1,2,3], [4,5,6]]  // 2D массив
+
 let first: i64 = arr[0]   // 10
 let length: i64 = arr.len // 3
+
+// Функции принимают массивы как параметры
+fn sum(items: [i64]) -> i64 {
+    let s: i64 = 0
+    let i: i64 = 0
+    while i < items.len {
+        s = s + items[i]
+        i = i + 1
+    }
+    return s
+}
 ```
 
 ### Layout в памяти
 
 ```
-[ptr - 24] = refcount (i64)
-[ptr - 16] = capacity (i64)
-[ptr - 8]  = length   (i64)
+[ptr - 32] = elem_size (qword) — байт на элемент (1, 2, 4 или 8)
+[ptr - 24] = refcount  (qword)
+[ptr - 16] = capacity  (qword)
+[ptr - 8]  = length    (qword)
 [ptr + 0]  = element[0]
-[ptr + 8]  = element[1]
+[ptr + elem_size] = element[1]
 ...
 ```
 

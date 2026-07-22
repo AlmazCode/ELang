@@ -1,4 +1,4 @@
-# ELang v0.43.0 Syntax Design
+# ELang v0.46.0 Syntax Design
 
 ## Identity: "Systems programming that reads like data flow"
 
@@ -159,15 +159,14 @@ Syntax: `=>` after params/keywords means "single expression body."
 
 ---
 
-## Feature 7: `using` — Clean Imports
+## Feature 7: `import` — Module Imports
 
 ```elang
-using "math"
-using "io" as io
+import std
+import "my_module"
 
-// Then call directly
-let r = sqrt(2.0)
-io::print("hello")
+// Then call with namespace
+let r = std::sqrt(2.0)
 ```
 
 ---
@@ -177,40 +176,41 @@ io::print("hello")
 Heap-allocated arrays with literal syntax, indexing, bounds checking, and pipeline operations.
 
 ```elang
-fn main() -> void {
+fn main() -> u8 {
     // Array literal — heap-allocated
-    let arr = [10, 20, 30, 40, 50]
+    let arr: [i64] = [10, 20, 30, 40, 50]
 
     // Index access (0-based, bounds-checked)
-    let first = arr[0]   // 10
-    let third = arr[2]   // 30
+    let first: i64 = arr[0]   // 10
+    let third: i64 = arr[2]   // 30
 
     // Length property
-    let len = arr.len    // 5
+    let len: i64 = arr.len    // 5
 
     // Arrays in loops
-    let sum = 0
-    let i = 0
+    let sum: i64 = 0
+    let i: i64 = 0
     while i < arr.len {
         sum = sum + arr[i]
         i = i + 1
     }
 
     // for-in (iterate elements)
-    for x in arr {
+    for x: i64 in arr {
         print_int(x)
     }
 
     // for-in with index (enumerate)
-    for i, x in arr {
+    for i: i64, x: i64 in arr {
         print_int(i)
         print_str(": ")
         print_int(x)
     }
 
     // Array with expressions
-    let x = 5
-    let arr2 = [x, x + 1, x * 2]  // [5, 6, 10]
+    let x: i64 = 5
+    let arr2: [i64] = [x, x + 1, x * 2]  // [5, 6, 10]
+    return 0
 }
 ```
 
@@ -233,11 +233,11 @@ The array variable holds a pointer to `element[0]` (i.e., `ptr`). `.len` reads f
 ### Pipeline Operations
 
 ```elang
-arr |> map(fn x => x * 2)              // map with closure
-arr |> map(double)                      // map with named function
-arr |> filter(fn x => x > 10)          // filter
-arr |> reduce(0, fn acc, x => acc + x) // reduce
-arr |> map(fn x => x * 2) |> filter(fn x => x > 30)  // chains
+arr |> map(fn(x: i64) => x * 2)              // map with closure
+arr |> map(double)                            // map with named function
+arr |> filter(fn(x: i64) => x > 10)          // filter
+arr |> reduce(0, fn(acc: i64, x: i64) => acc + x) // reduce
+arr |> map(fn(x: i64) => x * 2) |> filter(fn(x: i64) => x > 30)  // chains
 ```
 
 ### Calling Convention
@@ -246,10 +246,8 @@ All user-defined functions use **closure convention**: `rdi=env_ptr`, `rsi=arg0`
 
 ### Limitations
 
-- No captures in closures (env_ptr is always NULL)
-- No `push`/`pop`/`append` on existing arrays (immutable data)
 - No slices (`arr[1..3]` returns copy, not view)
-- `array_free` is no-op (bump allocator)
+- `array_free` is no-op (bump allocator — memory reclaimed at process exit)
 
 ---
 
@@ -271,15 +269,15 @@ let s = connect("localhost", 8080, 5000)
 
 ### Before (current ELang)
 ```elang
-fn main() -> void {
-    let x = 42
-    let y = 100
-    let sum = x + y
+fn main() -> u8 {
+    let x: i64 = 42
+    let y: i64 = 100
+    let sum: i64 = x + y
     print_str("Sum: ")
     print_int(sum)
     print_str("\n")
 
-    let result = match divide(10, 2) {
+    let result: i64 = match divide(10, 2) {
         Ok(val) => val
         Err(_) => 0
     }
@@ -292,15 +290,16 @@ fn main() -> void {
 
 ### After (new syntax)
 ```elang
-fn main() -> void {
-    let sum = 42 |> add(100)
+fn main() -> u8 {
+    let sum: i64 = 42 |> add(100)
     "Sum: " |> print() |> print(sum) |> print("\n")
 
-    let result = match divide(10, 2) {
+    let result: i64 = match divide(10, 2) {
         Ok(val) => val
         Err(_) => 0
     }
     "Result: " |> print() |> print(result) |> print("\n")
+    return 0
 }
 ```
 
@@ -411,7 +410,7 @@ let value = risky_operation() catch {
 | `defer` | Medium | High | Done |
 | Optional braces (`=>`) | Low | Medium | Done |
 | Tuple unpacking | Medium | Medium | Done |
-| `using` imports | Low | Low | Done |
+| `import` modules | Low | Low | Done |
 | **Arrays (heap)** | **High** | **High** | **Done** |
 | **Result\<T, E\>** | **Medium** | **High** | **Done** |
 | **Closures** | **High** | **High** | **Done** |
@@ -420,7 +419,7 @@ let value = risky_operation() catch {
 | Closures: captures | High | High | ✅ Done |
 | Struct methods | Medium | High | ✅ Done |
 | Enum variants with data | Medium | High | ✅ Done |
-| Named arguments | Medium | Low | Planned |
+| Named arguments | Medium | Low | ✅ Done |
 | Generics | High | High | Planned |
 | Traits | High | High | Planned |
 
@@ -481,9 +480,9 @@ impl Point {
 
 ```elang
 impl Point {
-    fn distance(self: Point, other: Point) -> i64 {
-        let dx: i64 = self.x - other.x
-        let dy: i64 = self.y - other.y
+    fn distance(p: Point, other: Point) -> i64 {
+        let dx: i64 = p.x - other.x
+        let dy: i64 = p.y - other.y
         dx * dx + dy * dy
     }
 }
@@ -493,7 +492,7 @@ let p2: Point = Point::new(4, 6)
 let d: i64 = p1.distance(p2)
 ```
 
-**Design decision:** Methods are syntactic sugar for functions with `self` as first parameter. No vtable, no dynamic dispatch. Static dispatch only.
+**Design decision:** Methods are syntactic sugar for functions with the object as first parameter. No vtable, no dynamic dispatch. Static dispatch only.
 
 ---
 
@@ -534,7 +533,7 @@ impl Point {
 }
 ```
 
-**Codegen:** Methods are compiled as functions with type prefix: `Point_new`, `Point_distance`.
+**Codegen:** Methods are compiled as functions with type prefix: `_Point_new`, `_Point_distance`.
 
 ---
 

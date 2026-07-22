@@ -157,6 +157,36 @@ fn main() -> u8 {
 | `42` | Константа |
 | `_` | Wildcard (любое значение) |
 
+### Проверка полноты (exhaustiveness)
+
+Компилятор проверяет, что match покрывает все варианты:
+
+- **Result\<T, E\>**: обязаны быть `Ok(_)` и `Err(_)` — иначе ошибка компиляции
+- **Enum**: обязаны быть все варианты, либо wildcard `_` — иначе ошибка с перечислением пропущенных
+
+```elang
+enum Color { Red Green Blue }
+
+// Ошибка: missing Color::Blue
+let name: string = match c {
+    Color::Red => "red"
+    Color::Green => "green"
+}
+
+// OK — wildcard покрывает всё
+let name: string = match c {
+    Color::Red => "red"
+    _ => "other"
+}
+
+// OK — все варианты перечислены
+let name: string = match c {
+    Color::Red => "red"
+    Color::Green => "green"
+    Color::Blue => "blue"
+}
+```
+
 match expression возвращает значение — آخرнее выражение в ветке становится результатом.
 
 ## break и continue
