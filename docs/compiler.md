@@ -85,7 +85,7 @@ elc [опции] <файл.el>
 ### 4. Semantics (semantics.c)
 
 - Type checking: проверка совместимости типов
-- Type inference: вывод типов для литералов
+- Type inference: выведение типов (пока не реализовано)
 - Constant folding: вычисление `2 + 3` → `5` на этапе компиляции
 - Scope analysis: проверка области видимости переменных
 - Function table: кросс-модульный поиск функций
@@ -128,7 +128,7 @@ elc [опции] <файл.el>
 #define MAX_PATH_LEN     1024
 #define MAX_MODULES      64
 #define MAX_PARSE_DEPTH  2000
-#define ELANG_VERSION    "0.45.0"
+#define ELANG_VERSION    "0.46.0"
 ```
 
 ## Безопасные макросы
@@ -189,7 +189,7 @@ SRCS = src/token.c src/lexer.c src/ast.c src/parser.c src/semantics.c src/codege
 
 | Метрика | Значение |
 |---------|----------|
-| Версия | v0.45.0 |
+| Версия | v0.46.0 |
 | Строк кода (C) | ~7000 |
 | Строк asm (core) | ~1550 |
 | Файлов исходников | 17 (.c/.h) + 3 (.asm) |

@@ -20,6 +20,7 @@ typedef enum {
     AST_ARRAY_LITERAL, AST_LEN_EXPR,
     AST_CLOSURE,
     AST_RESULT_TYPE,
+    AST_ARRAY_TYPE,
     AST_IMPL_DECL,
 } ast_type_t;
 
@@ -30,7 +31,7 @@ struct ast_node {
     int line, col;
     type_info_t *typed;  /* resolved type from semantic analysis */
     union {
-        long int_val;
+        unsigned long long int_val;
         double float_val;
         struct { char *value; size_t length; } string_val;
         char char_val;
@@ -81,6 +82,7 @@ struct ast_node {
         struct { char **params; size_t *param_lens; int param_count;
                  ast_node_t *body; char **captures; size_t *capture_lens; int capture_count; } closure; /* fn x => expr */
         struct { ast_node_t *ok_type; ast_node_t *err_type; } result_type; /* Result<T, E> */
+        struct { ast_node_t *element_type; ast_node_t *length; } array_type; /* [T] or [T; N] */
         struct { char *type_name; size_t type_name_len;
             ast_node_t **methods; int method_count; } impl_decl; /* impl Type { fn ... } */
         struct { ast_node_t *body; } loop_stmt;        /* loop { ... } */

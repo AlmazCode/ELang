@@ -79,7 +79,7 @@ static void print_ast(ast_node_t *n, int indent) {
     if (!n) return;
     for (int i = 0; i < indent; i++) printf("  ");
     switch (n->type) {
-        case AST_INT_LIT: printf("IntLit(%ld)\n", n->as.int_val); break;
+        case AST_INT_LIT: printf("IntLit(%llu)\n", (unsigned long long)n->as.int_val); break;
         case AST_STRING_LIT: printf("StringLit(\"%.*s\")\n", (int)n->as.string_val.length, n->as.string_val.value); break;
         case AST_IDENT: printf("Ident(%.*s)\n", (int)n->as.ident.name_len, n->as.ident.name); break;
         case AST_BINARY_OP:
@@ -184,6 +184,11 @@ static void print_ast(ast_node_t *n, int indent) {
             print_ast(n->as.result_type.ok_type, indent+1);
             print_ast(n->as.result_type.err_type, indent+1);
             break;
+        case AST_ARRAY_TYPE:
+            printf("ArrayType\n");
+            print_ast(n->as.array_type.element_type, indent+1);
+            if (n->as.array_type.length) print_ast(n->as.array_type.length, indent+1);
+            break;
         case AST_IMPORT_DECL: {
             const char *kind = n->as.import.is_stdlib ? "stdlib" : "project";
             if (n->as.import.alias)
@@ -210,7 +215,7 @@ static ast_node_t *parse_file(const char *path) {
     if (!src) return NULL;
     parser_t p; parser_init(&p, src);
     ast_node_t *ast = parser_parse(&p);
-    if (!ast || p.has_error) { fprintf(stderr, "Parse error in %s\n", path); free(src); return NULL; }
+    if (!ast || p.ever_had_error) { fprintf(stderr, "Parse error in %s\n", path); free(src); return NULL; }
     free(src);
     return ast;
 }
@@ -429,15 +434,25 @@ static int resolve_imports(ast_node_t *prog, const char *base_dir) {
 /* --- Run shell command, return 0 on success --- */
 /* --- Run a command safely without shell interpretation --- */
 static int run_cmd(const char *cmd) {
-    /* Parse command into argv for execvp (split on spaces) */
+    /* Parse command into argv for execvp (split on spaces, respect double quotes) */
     char *argv[64];
     int argc = 0;
     char buf[MAX_PATH_LEN * 3];
     snprintf(buf, sizeof(buf), "%s", cmd);
-    char *tok = strtok(buf, " ");
-    while (tok && argc < 63) {
-        argv[argc++] = tok;
-        tok = strtok(NULL, " ");
+    char *p = buf;
+    while (*p && argc < 63) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        if (*p == '"') {
+            p++;
+            argv[argc++] = p;
+            while (*p && *p != '"') p++;
+            if (*p == '"') *p++ = '\0';
+        } else {
+            argv[argc++] = p;
+            while (*p && *p != ' ') p++;
+            if (*p) *p++ = '\0';
+        }
     }
     argv[argc] = NULL;
 
@@ -564,7 +579,7 @@ int main(int argc, char **argv) {
 
     parser_t p; parser_init(&p, src);
     ast_node_t *ast = parser_parse(&p);
-    if (!ast || p.has_error) { fprintf(stderr, "Parse error\n"); ast_free(ast); free(src); return 1; }
+    if (!ast || p.ever_had_error) { fprintf(stderr, "Parse error\n"); ast_free(ast); free(src); return 1; }
     if (show_ast) { print_ast(ast, 0); ast_free(ast); free(src); return 0; }
 
     /* Resolve imports */
@@ -589,7 +604,7 @@ int main(int argc, char **argv) {
     }
 
     if (fold_only) {
-        sem_fold_constants(ast);
+        sem_fold_constants(&sem, ast);
         printf("elc: %s — folded (%d decls)\n", input, ast->as.program.count);
         ast_free(ast); free(src); free_libs(); return 0;
     }

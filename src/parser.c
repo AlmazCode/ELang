@@ -13,12 +13,15 @@ static int expect(parser_t *p, token_type_t t) {
     if (p->current.type == t) { advance(p); return 1; }
     fprintf(stderr, "Parse error at %d:%d: expected %s, got %s\n",
             p->current.line, p->current.col, token_type_name(t), token_type_name(p->current.type));
-    p->has_error = 1;
+    p->has_error = 1; p->ever_had_error = 1;
     return 0;
 }
 static char *tok_str(token_t *t) { char *s = SAFE_MALLOC(t->length + 1); memcpy(s, t->value, t->length); s[t->length] = '\0'; return s; }
 
-/* parse a simple type identifier (i64, string, etc.) without expression parsing */
+/* forward declarations */
+static ast_node_t *parse_primary(parser_t *p);
+
+/* parse a type (i64, string, [T], [T; N], *T, Result<T, E>) */
 static ast_node_t *parse_type_ident(parser_t *p) {
     token_t t = p->current;
     switch (t.type) {
@@ -31,6 +34,70 @@ static ast_node_t *parse_type_ident(parser_t *p) {
             n->as.ident.name = tok_str(&t); n->as.ident.name_len = t.length;
             advance(p);
             return n;
+        }
+        case TOKEN_LBRACKET: {
+            /* Array type: [T] or [T; N] */
+            advance(p); /* consume [ */
+            ast_node_t *elem_type = parse_type_ident(p);
+            ast_node_t *length = NULL;
+            if (p->current.type == TOKEN_SEMICOLON) {
+                advance(p); /* consume ; */
+                length = parse_primary(p); /* parse integer literal for N */
+            }
+            if (p->current.type == TOKEN_RBRACKET)
+                advance(p); /* consume ] */
+            else
+                fprintf(stderr, "Parse error at %d:%d: expected ']' in array type\n",
+                    p->current.line, p->current.col);
+            ast_node_t *n = ast_new(AST_ARRAY_TYPE, t.line, t.col);
+            n->as.array_type.element_type = elem_type;
+            n->as.array_type.length = length;
+            return n;
+        }
+        case TOKEN_STAR: {
+            /* Pointer type: *T */
+            advance(p); /* consume * */
+            ast_node_t *base = parse_type_ident(p);
+            ast_node_t *n = ast_new(AST_BINARY_OP, t.line, t.col);
+            n->as.binary.op = TOKEN_STAR;
+            n->as.binary.left = base;
+            n->as.binary.right = NULL;
+            return n;
+        }
+        case TOKEN_RESULT: {
+            /* Result<T, E> type */
+            ast_node_t *n = ast_new(AST_RESULT_TYPE, t.line, t.col);
+            advance(p); /* consume Result */
+            expect(p, TOKEN_LT);
+            n->as.result_type.ok_type = parse_type_ident(p);
+            expect(p, TOKEN_COMMA);
+            n->as.result_type.err_type = parse_type_ident(p);
+            expect(p, TOKEN_GT);
+            return n;
+        }
+        case TOKEN_LPAREN: {
+            /* Tuple type: (T1, T2, ...) */
+            advance(p); /* consume ( */
+            ast_node_t *first = parse_type_ident(p);
+            if (p->current.type == TOKEN_COMMA) {
+                /* Multi-element tuple */
+                ast_node_t *n = ast_new(AST_TUPLE, t.line, t.col);
+                n->as.tuple.elements = SAFE_MALLOC(sizeof(void*) * 2);
+                n->as.tuple.elements[0] = first;
+                n->as.tuple.count = 1;
+                do {
+                    advance(p); /* consume , */
+                    n->as.tuple.count++;
+                    n->as.tuple.elements = SAFE_REALLOC(n->as.tuple.elements,
+                        sizeof(void*) * n->as.tuple.count);
+                    n->as.tuple.elements[n->as.tuple.count - 1] = parse_type_ident(p);
+                } while (p->current.type == TOKEN_COMMA);
+                expect(p, TOKEN_RPAREN);
+                return n;
+            }
+            /* Single element in parens — just return the type */
+            expect(p, TOKEN_RPAREN);
+            return first;
         }
         default:
             fprintf(stderr, "Parse error at %d:%d: expected type, got %s\n",
@@ -57,10 +124,10 @@ static ast_node_t *parse_primary(parser_t *p) {
             if (vlen > 2 && val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) {
                 /* Hex: 0x... */
                 char *end;
-                n->as.int_val = strtol(val + 2, &end, 16);
+                n->as.int_val = strtoull(val + 2, &end, 16);
             } else if (vlen > 2 && val[0] == '0' && (val[1] == 'o' || val[1] == 'O')) {
                 /* Octal: 0o... */
-                long result = 0;
+                unsigned long long result = 0;
                 for (size_t i = 2; i < vlen; i++) {
                     if (val[i] == '_') continue;
                     result = (result << 3) | (val[i] - '0');
@@ -68,7 +135,7 @@ static ast_node_t *parse_primary(parser_t *p) {
                 n->as.int_val = result;
             } else if (vlen > 2 && val[0] == '0' && (val[1] == 'b' || val[1] == 'B')) {
                 /* Binary: 0b... */
-                long result = 0;
+                unsigned long long result = 0;
                 for (size_t i = 2; i < vlen; i++) {
                     if (val[i] == '_') continue;
                     result = (result << 1) | (val[i] - '0');
@@ -76,7 +143,7 @@ static ast_node_t *parse_primary(parser_t *p) {
                 n->as.int_val = result;
             } else {
                 /* Decimal */
-                n->as.int_val = strtol(val, NULL, 0);
+                n->as.int_val = strtoull(val, NULL, 0);
             }
             advance(p);
             return n;
@@ -277,10 +344,10 @@ static ast_node_t *parse_primary(parser_t *p) {
             return n; }
         case TOKEN_ERROR:
             fprintf(stderr, "Parse error at %d:%d: invalid token\n", t.line, t.col);
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
             advance(p); return NULL;
         default: fprintf(stderr, "Parse error at %d:%d: unexpected %s\n", t.line, t.col, token_type_name(t.type));
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
             advance(p); return NULL;
     }
 }
@@ -289,11 +356,12 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
     if (++p->depth > MAX_PARSE_DEPTH) {
         fprintf(stderr, "Parse error at %d:%d: expression nested too deeply\n",
                 p->current.line, p->current.col);
-        p->has_error = 1;
+        p->has_error = 1; p->ever_had_error = 1;
         p->depth--;
         return NULL;
     }
     ast_node_t *left = parse_primary(p);
+    if (!left) { p->depth--; return NULL; }
     /* handle postfix index access: expr[expr] */
     while (left && p->current.type == TOKEN_LBRACKET) {
         advance(p);
@@ -357,6 +425,7 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
     }
     while (1) {
         token_type_t op = p->current.type; int prec = 0;
+        int op_line = p->current.line, op_col = p->current.col;
         switch (op) {
             case TOKEN_PIPE_ARROW: prec=1; break;
             case TOKEN_OR: prec=2; break; case TOKEN_AND: prec=3; break;
@@ -372,18 +441,18 @@ static ast_node_t *parse_binary(parser_t *p, int min_prec) {
         advance(p);
         ast_node_t *right = parse_binary(p, prec + 1);
         if (op == TOKEN_DOTDOT) {
-            ast_node_t *n = ast_new(AST_RANGE, op, 0);
+            ast_node_t *n = ast_new(AST_RANGE, op_line, op_col);
             n->as.range.left = left; n->as.range.right = right;
             p->depth--;
             return n;
         }
         if (op == TOKEN_PIPE_ARROW) {
-            ast_node_t *n = ast_new(AST_PIPE, op, 0);
+            ast_node_t *n = ast_new(AST_PIPE, op_line, op_col);
             n->as.pipe.left = left; n->as.pipe.right = right;
             left = n;
             continue;
         }
-        ast_node_t *n = ast_new(AST_BINARY_OP, op, 0);
+        ast_node_t *n = ast_new(AST_BINARY_OP, op_line, op_col);
         n->as.binary.op = op; n->as.binary.left = left; n->as.binary.right = right;
         left = n;
     }
@@ -436,9 +505,9 @@ static ast_node_t *parse_let(parser_t *p) {
     if (!match(p, TOKEN_COLON)) {
         fprintf(stderr, "Parse error at %d:%d: expected ':' after variable name '%.*s'\n",
             p->current.line, p->current.col, (int)n->as.let.name_len, n->as.let.name);
-        p->has_error = 1;
+        p->has_error = 1; p->ever_had_error = 1;
     }
-    n->as.let.type_expr = parse_binary(p, 0);
+    n->as.let.type_expr = parse_type_ident(p);
     if (match(p, TOKEN_ASSIGN)) n->as.let.value = parse_expr(p);
     return n;
 }
@@ -446,6 +515,7 @@ static ast_node_t *parse_let(parser_t *p) {
 static ast_node_t *parse_if(parser_t *p) {
     ast_node_t *n = ast_new(AST_IF, p->current.line, p->current.col);
     advance(p); n->as.if_stmt.condition = parse_expr(p);
+    if (!n->as.if_stmt.condition) return n;
     skip_nl(p); n->as.if_stmt.then_block = parse_block(p);
     skip_nl(p);
     if (match(p, TOKEN_ELSE)) { skip_nl(p);
@@ -480,7 +550,7 @@ static ast_node_t *parse_for(parser_t *p) {
     if (!match(p, TOKEN_COLON)) {
         fprintf(stderr, "Parse error at %d:%d: expected ':' after variable name\n",
             p->current.line, p->current.col);
-        p->has_error = 1;
+        p->has_error = 1; p->ever_had_error = 1;
     }
     n->as.for_stmt.var_types[0] = parse_binary(p, 0);
 
@@ -497,7 +567,7 @@ static ast_node_t *parse_for(parser_t *p) {
         if (!match(p, TOKEN_COLON)) {
             fprintf(stderr, "Parse error at %d:%d: expected ':' after variable name\n",
                 p->current.line, p->current.col);
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
         }
         n->as.for_stmt.var_types[1] = parse_binary(p, 0);
     }
@@ -566,19 +636,7 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
     if (match(p, TOKEN_ARROW)) {
         skip_nl(p);
         if (p->current.type != TOKEN_FAT_ARROW) {
-            /* check for Result<T, E> */
-            if (p->current.type == TOKEN_RESULT) {
-                ast_node_t *n_result = ast_new(AST_RESULT_TYPE, p->current.line, p->current.col);
-                advance(p); /* consume Result */
-                expect(p, TOKEN_LT);
-                n_result->as.result_type.ok_type = parse_type_ident(p);
-                expect(p, TOKEN_COMMA);
-                n_result->as.result_type.err_type = parse_type_ident(p);
-                expect(p, TOKEN_GT);
-                n->as.fn_decl.return_type = n_result;
-            } else {
-                n->as.fn_decl.return_type = parse_expr(p);
-            }
+            n->as.fn_decl.return_type = parse_type_ident(p);
         }
     }
     skip_nl(p);
@@ -633,7 +691,7 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
         if (!n->as.fn_decl.return_type) {
             fprintf(stderr, "Parse error at %d:%d: fn main must have a return type: fn main() -> u8\n",
                 n->line, n->col);
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
         } else if (n->as.fn_decl.return_type->type == AST_IDENT) {
             char rname[MAX_IDENT_LEN];
             snprintf(rname, sizeof(rname), "%.*s",
@@ -642,12 +700,12 @@ static ast_node_t *parse_fn_decl(parser_t *p) {
             if (strcmp(rname, "u8") != 0) {
                 fprintf(stderr, "Parse error at %d:%d: fn main must return u8, not %s\n",
                     n->line, n->col, rname);
-                p->has_error = 1;
+                p->has_error = 1; p->ever_had_error = 1;
             }
         } else {
             fprintf(stderr, "Parse error at %d:%d: fn main must return u8\n",
                 n->line, n->col);
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
         }
     }
     return n;
@@ -697,7 +755,7 @@ static ast_node_t *parse_import(parser_t *p) {
     } else {
         fprintf(stderr, "Parse error at %d:%d: expected module name after 'import'\n",
             p->current.line, p->current.col);
-        p->has_error = 1;
+        p->has_error = 1; p->ever_had_error = 1;
         n->as.import.path = strdup("");
         n->as.import.path_len = 0;
         n->as.import.is_stdlib = 0;
@@ -715,7 +773,7 @@ static ast_node_t *parse_import(parser_t *p) {
         } else {
             fprintf(stderr, "Parse error at %d:%d: expected alias name after 'as'\n",
                 p->current.line, p->current.col);
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
         }
     }
 
@@ -785,7 +843,7 @@ static ast_node_t *parse_impl(parser_t *p) {
         } else {
             fprintf(stderr, "Parse error at %d:%d: expected 'fn' in impl block\n",
                 p->current.line, p->current.col);
-            p->has_error = 1;
+            p->has_error = 1; p->ever_had_error = 1;
             break;
         }
     }
@@ -869,7 +927,7 @@ static ast_node_t *parse_stmt(parser_t *p) {
 
 void parser_init(parser_t *p, const char *source) {
     lexer_init(&p->lexer, source); p->current = lexer_next_token(&p->lexer); p->peek = lexer_next_token(&p->lexer);
-    p->has_error = 0; p->depth = 0;
+    p->has_error = 0; p->ever_had_error = 0; p->depth = 0;
 }
 
 ast_node_t *parser_parse(parser_t *p) {

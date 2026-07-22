@@ -255,6 +255,13 @@ void sem_free(sem_ctx_t *ctx) {
         free(ctx->fn_table[i].module);
     }
     free(ctx->fn_table);
+    for (int i = 0; i < ctx->enum_count; i++) {
+        free(ctx->enum_registry[i].name);
+        for (int v = 0; v < ctx->enum_registry[i].variant_count; v++)
+            free(ctx->enum_registry[i].variants[v]);
+        free(ctx->enum_registry[i].variants);
+    }
+    free(ctx->enum_registry);
 }
 
 void sem_error(sem_ctx_t *ctx, int line, int col, const char *fmt, ...) {
@@ -323,6 +330,32 @@ type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
             type_info_t *err = sem_resolve_type(ctx, type_node->as.result_type.err_type);
             return type_new_result(ok, err);
         }
+        case AST_ARRAY_TYPE: {
+            /* [T] or [T; N] */
+            type_info_t *elem = sem_resolve_type(ctx, type_node->as.array_type.element_type);
+            int len = -1;
+            if (type_node->as.array_type.length) {
+                ast_node_t *len_node = type_node->as.array_type.length;
+                if (len_node->type == AST_INT_LIT) {
+                    len = (int)len_node->as.int_val;
+                    if (len < 0) {
+                        sem_error(ctx, type_node->line, type_node->col,
+                            "array length must be non-negative");
+                        len = -1;
+                    }
+                } else {
+                    sem_error(ctx, type_node->line, type_node->col,
+                        "array length must be a constant integer");
+                }
+            }
+            return type_new_array(elem, len);
+        }
+        case AST_TUPLE: {
+            /* Tuple type: (T1, T2, ...) — resolve first element for now */
+            if (type_node->as.tuple.count > 0)
+                return sem_resolve_type(ctx, type_node->as.tuple.elements[0]);
+            return type_new(TYPE_UNKNOWN);
+        }
         default: break;
     }
     return type_new(TYPE_UNKNOWN);
@@ -330,22 +363,28 @@ type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node) {
 
 /* ===== Type Inference ===== */
 
+/* Helper: set node->typed and return the type */
+static type_info_t *set_typed(ast_node_t *node, type_info_t *t) {
+    if (node) node->typed = t;
+    return t;
+}
+
 type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
     if (!node) return NULL;
 
     switch (node->type) {
-        case AST_INT_LIT: return type_new(TYPE_I64);
-        case AST_FLOAT_LIT: return type_new(TYPE_F64);
-        case AST_BOOL_LIT: return type_new(TYPE_BOOL);
-        case AST_CHAR_LIT: return type_new(TYPE_CHAR);
-        case AST_STRING_LIT: return type_new(TYPE_STRING);
+        case AST_INT_LIT: return set_typed(node, type_new(TYPE_I64));
+        case AST_FLOAT_LIT: return set_typed(node, type_new(TYPE_F64));
+        case AST_BOOL_LIT: return set_typed(node, type_new(TYPE_BOOL));
+        case AST_CHAR_LIT: return set_typed(node, type_new(TYPE_CHAR));
+        case AST_STRING_LIT: return set_typed(node, type_new(TYPE_STRING));
 
         case AST_IDENT: {
             char name[MAX_IDENT_LEN];
             snprintf(name, sizeof(name), "%.*s", (int)node->as.ident.name_len, node->as.ident.name);
             symbol_t *sym = scope_find(ctx->current_scope, name);
-            if (sym) return sym->type;
-            return type_new(TYPE_UNKNOWN);
+            if (sym) return set_typed(node, sym->type);
+            return set_typed(node, type_new(TYPE_UNKNOWN));
         }
 
         case AST_BINARY_OP: {
@@ -359,13 +398,13 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
                 /* Look up enum type in scope */
                 symbol_t *sym = scope_find(ctx->current_scope, enum_name);
                 if (sym && sym->type && sym->type->kind == TYPE_ENUM) {
-                    return type_copy(sym->type);
+                    return set_typed(node, type_copy(sym->type));
                 }
-                return type_new(TYPE_I64); /* fallback */
+                return set_typed(node, type_new(TYPE_I64)); /* fallback */
             }
             type_info_t *left = sem_infer_expr(ctx, node->as.binary.left);
             type_info_t *right = sem_infer_expr(ctx, node->as.binary.right);
-            if (!left || !right) return type_new(TYPE_UNKNOWN);
+            if (!left || !right) return set_typed(node, type_new(TYPE_UNKNOWN));
 
             /* comparison operators always return bool */
             switch (node->as.binary.op) {
@@ -373,17 +412,17 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
                 case TOKEN_LT: case TOKEN_GT:
                 case TOKEN_LTE: case TOKEN_GTE:
                 case TOKEN_AND: case TOKEN_OR:
-                    return type_new(TYPE_BOOL);
+                    return set_typed(node, type_new(TYPE_BOOL));
                 default: break;
             }
 
             /* arithmetic: use left operand's type */
-            if (type_is_numeric(left) && type_is_numeric(right)) return type_copy(left);
+            if (type_is_numeric(left) && type_is_numeric(right)) return set_typed(node, type_copy(left));
             /* string concatenation */
-            if (left->kind == TYPE_STRING && right->kind == TYPE_STRING) return type_copy(left);
+            if (left->kind == TYPE_STRING && right->kind == TYPE_STRING) return set_typed(node, type_copy(left));
             /* range */
-            if (node->as.binary.op == TOKEN_DOTDOT) return type_copy(left);
-            return type_new(TYPE_UNKNOWN);
+            if (node->as.binary.op == TOKEN_DOTDOT) return set_typed(node, type_copy(left));
+            return set_typed(node, type_new(TYPE_UNKNOWN));
         }
 
         case AST_CALL: {
@@ -395,10 +434,10 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
                     node->as.call.callee->as.ident.name);
                 symbol_t *sym = scope_find(ctx->current_scope, name);
                 if (sym && sym->type && sym->type->kind == TYPE_FN) {
-                    return type_copy(sym->type->base); /* return type */
+                    return set_typed(node, type_copy(sym->type->base)); /* return type */
                 }
                 /* function not found — treat as extern (linker will resolve) */
-                return type_new(TYPE_UNKNOWN);
+                return set_typed(node, type_new(TYPE_UNKNOWN));
             }
             /* handle module::func() calls */
             if (node->as.call.callee->type == AST_BINARY_OP &&
@@ -412,10 +451,10 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
                     (int)fn->as.ident.name_len, fn->as.ident.name);
                 symbol_t *sym = scope_find(ctx->current_scope, name);
                 if (sym && sym->type && sym->type->kind == TYPE_FN) {
-                    return type_copy(sym->type->base);
+                    return set_typed(node, type_copy(sym->type->base));
                 }
             }
-            return type_new(TYPE_UNKNOWN);
+            return set_typed(node, type_new(TYPE_UNKNOWN));
         }
 
         case AST_OK_EXPR: {
@@ -423,8 +462,8 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
             type_info_t *val_type = node->as.ok_expr.value
                 ? sem_infer_expr(ctx, node->as.ok_expr.value)
                 : type_new(TYPE_UNKNOWN);
-            return type_new_result(val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN),
-                                   type_new(TYPE_UNKNOWN));
+            return set_typed(node, type_new_result(val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN),
+                                   type_new(TYPE_UNKNOWN)));
         }
 
         case AST_ERR_EXPR: {
@@ -432,21 +471,21 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
             type_info_t *val_type = node->as.err_expr.value
                 ? sem_infer_expr(ctx, node->as.err_expr.value)
                 : type_new(TYPE_UNKNOWN);
-            return type_new_result(type_new(TYPE_UNKNOWN),
-                                   val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN));
+            return set_typed(node, type_new_result(type_new(TYPE_UNKNOWN),
+                                   val_type ? type_copy(val_type) : type_new(TYPE_UNKNOWN)));
         }
 
         case AST_MATCH: {
             /* Match expression returns the type of the case bodies */
             if (node->as.match_expr.case_count > 0) {
-                return sem_infer_expr(ctx, node->as.match_expr.cases[0].result);
+                return set_typed(node, sem_infer_expr(ctx, node->as.match_expr.cases[0].result));
             }
-            return type_new(TYPE_UNKNOWN);
+            return set_typed(node, type_new(TYPE_UNKNOWN));
         }
         case AST_PIPE: {
             if (node->as.pipe.right->type == AST_CALL)
-                return sem_infer_expr(ctx, node->as.pipe.right);
-            return type_new(TYPE_UNKNOWN);
+                return set_typed(node, sem_infer_expr(ctx, node->as.pipe.right));
+            return set_typed(node, type_new(TYPE_UNKNOWN));
         }
 
         case AST_TRY_EXPR: {
@@ -454,24 +493,24 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
             type_info_t *inner = sem_infer_expr(ctx, node->as.try_expr.operand);
             if (inner && inner->kind == TYPE_RESULT) {
                 /* Unwrap Result<T, E> → T */
-                return inner->result.ok_type ? type_copy(inner->result.ok_type) : type_new(TYPE_UNKNOWN);
+                return set_typed(node, inner->result.ok_type ? type_copy(inner->result.ok_type) : type_new(TYPE_UNKNOWN));
             }
-            return inner ? type_copy(inner) : type_new(TYPE_UNKNOWN);
+            return set_typed(node, inner ? type_copy(inner) : type_new(TYPE_UNKNOWN));
         }
 
         case AST_CATCH_EXPR: {
             /* expr catch { handler } — returns handler's type */
-            return sem_infer_expr(ctx, node->as.catch_expr.handler);
+            return set_typed(node, sem_infer_expr(ctx, node->as.catch_expr.handler));
         }
 
         case AST_PANIC_EXPR: {
             /* panic(msg) — returns void (never returns actually) */
-            return type_new(TYPE_VOID);
+            return set_typed(node, type_new(TYPE_VOID));
         }
 
         case AST_ASSERT_EXPR: {
             /* assert(cond, msg) — returns void */
-            return type_new(TYPE_VOID);
+            return set_typed(node, type_new(TYPE_VOID));
         }
 
         case AST_TUPLE: {
@@ -479,51 +518,67 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node) {
             type_info_t *t = type_new(TYPE_UNKNOWN);
             if (node->as.tuple.count > 0)
                 t = sem_infer_expr(ctx, node->as.tuple.elements[0]);
-            return t; /* simplified: return first element type */
+            return set_typed(node, t); /* simplified: return first element type */
         }
 
         case AST_ARRAY_LITERAL: {
-            /* [1, 2, 3] — infer type from first element, count from count */
+            /* [1, 2, 3] — infer type from first element, check all elements */
             if (node->as.array_literal.count == 0)
-                return type_new_array(type_new(TYPE_I64), 0);
+                return set_typed(node, type_new_array(type_new(TYPE_I64), 0));
             type_info_t *elem_type = sem_infer_expr(ctx, node->as.array_literal.elements[0]);
-            return type_new_array(elem_type ? type_copy(elem_type) : type_new(TYPE_I64),
-                                  node->as.array_literal.count);
+            for (int i = 1; i < node->as.array_literal.count; i++) {
+                type_info_t *t = sem_infer_expr(ctx, node->as.array_literal.elements[i]);
+                if (t && elem_type && !type_equal(t, elem_type) && t->kind != TYPE_UNKNOWN) {
+                    sem_error(ctx, node->as.array_literal.elements[i]->line,
+                        node->as.array_literal.elements[i]->col,
+                        "array element type mismatch: expected %s, got %s",
+                        type_name_buf(elem_type, (char[128]){0}, 128),
+                        type_name_buf(t, (char[128]){0}, 128));
+                }
+            }
+            return set_typed(node, type_new_array(elem_type ? type_copy(elem_type) : type_new(TYPE_I64),
+                                  node->as.array_literal.count));
         }
 
         case AST_INDEX: {
             /* arr[i] — return element type of the array */
             type_info_t *arr_type = sem_infer_expr(ctx, node->as.binary.left);
+            type_info_t *idx_type = sem_infer_expr(ctx, node->as.binary.right);
+            if (idx_type && !type_is_integer(idx_type) && idx_type->kind != TYPE_UNKNOWN) {
+                sem_error(ctx, node->line, node->col,
+                    "array index must be an integer, got %s",
+                    type_name_buf(idx_type, (char[128]){0}, 128));
+            }
             if (arr_type && arr_type->kind == TYPE_ARRAY && arr_type->base)
-                return type_copy(arr_type->base);
-            return type_new(TYPE_UNKNOWN);
+                return set_typed(node, type_copy(arr_type->base));
+            return set_typed(node, type_new(TYPE_UNKNOWN));
         }
 
         case AST_LEN_EXPR: {
             /* arr.len — return i64 */
             sem_infer_expr(ctx, node->as.len_expr.operand);
-            return type_new(TYPE_I64);
+            return set_typed(node, type_new(TYPE_I64));
         }
 
         case AST_BLOCK: {
-            if (node->as.block.count == 0) return type_new(TYPE_VOID);
-            return sem_infer_expr(ctx, node->as.block.stmts[node->as.block.count - 1]);
+            if (node->as.block.count == 0) return set_typed(node, type_new(TYPE_VOID));
+            return set_typed(node, sem_infer_expr(ctx, node->as.block.stmts[node->as.block.count - 1]));
         }
 
-        default: return type_new(TYPE_UNKNOWN);
+        default: return set_typed(node, type_new(TYPE_UNKNOWN));
     }
 }
 
 /* ===== Constant Folding ===== */
 
-void sem_fold_constants(ast_node_t *node) {
+void sem_fold_constants(sem_ctx_t *ctx, ast_node_t *node) {
     if (!node) return;
 
     /* fold children first */
     switch (node->type) {
         case AST_BINARY_OP:
-            sem_fold_constants(node->as.binary.left);
-            sem_fold_constants(node->as.binary.right);
+            sem_fold_constants(ctx, node->as.binary.left);
+            sem_fold_constants(ctx, node->as.binary.right);
             /* fold int+int */
             if (node->as.binary.left->type == AST_INT_LIT &&
                 node->as.binary.right->type == AST_INT_LIT) {
@@ -575,9 +630,9 @@ void sem_fold_constants(ast_node_t *node) {
             }
             break;
         case AST_IF:
-            sem_fold_constants(node->as.if_stmt.condition);
-            sem_fold_constants(node->as.if_stmt.then_block);
-            sem_fold_constants(node->as.if_stmt.else_block);
+            sem_fold_constants(ctx, node->as.if_stmt.condition);
+            sem_fold_constants(ctx, node->as.if_stmt.then_block);
+            sem_fold_constants(ctx, node->as.if_stmt.else_block);
             /* fold if(true) { a } else { b } → a */
             if (node->as.if_stmt.condition->type == AST_BOOL_LIT) {
                 if (node->as.if_stmt.condition->as.bool_val) {
@@ -598,55 +653,117 @@ void sem_fold_constants(ast_node_t *node) {
                 }
             }
             break;
-        case AST_RETURN: sem_fold_constants(node->as.ret.value); break;
+        case AST_RETURN: sem_fold_constants(ctx, node->as.ret.value); break;
         case AST_BLOCK:
             for (int i = 0; i < node->as.block.count; i++)
-                sem_fold_constants(node->as.block.stmts[i]);
+                sem_fold_constants(ctx, node->as.block.stmts[i]);
             break;
-        case AST_LET: sem_fold_constants(node->as.let.value); break;
-        case AST_ASSIGN: sem_fold_constants(node->as.assign.value); break;
+        case AST_LET: sem_fold_constants(ctx, node->as.let.value); break;
+        case AST_ASSIGN: sem_fold_constants(ctx, node->as.assign.value); break;
         case AST_CALL:
             for (int i = 0; i < node->as.call.arg_count; i++)
-                sem_fold_constants(node->as.call.args[i]);
+                sem_fold_constants(ctx, node->as.call.args[i]);
             break;
         case AST_PIPE:
-            sem_fold_constants(node->as.pipe.left);
-            sem_fold_constants(node->as.pipe.right);
+            sem_fold_constants(ctx, node->as.pipe.left);
+            sem_fold_constants(ctx, node->as.pipe.right);
             break;
-        case AST_TRY_EXPR: sem_fold_constants(node->as.try_expr.operand); break;
+        case AST_TRY_EXPR: sem_fold_constants(ctx, node->as.try_expr.operand); break;
         case AST_CATCH_EXPR:
-            sem_fold_constants(node->as.catch_expr.operand);
-            sem_fold_constants(node->as.catch_expr.handler);
+            sem_fold_constants(ctx, node->as.catch_expr.operand);
+            sem_fold_constants(ctx, node->as.catch_expr.handler);
             break;
-        case AST_PANIC_EXPR: sem_fold_constants(node->as.panic_expr.message); break;
+        case AST_PANIC_EXPR: sem_fold_constants(ctx, node->as.panic_expr.message); break;
         case AST_ASSERT_EXPR:
-            sem_fold_constants(node->as.assert_expr.condition);
-            sem_fold_constants(node->as.assert_expr.message);
+            sem_fold_constants(ctx, node->as.assert_expr.condition);
+            sem_fold_constants(ctx, node->as.assert_expr.message);
             break;
-        case AST_DEFER: sem_fold_constants(node->as.defer_stmt.expr); break;
+        case AST_DEFER: sem_fold_constants(ctx, node->as.defer_stmt.expr); break;
         case AST_ARRAY_LITERAL:
             for (int i = 0; i < node->as.array_literal.count; i++)
-                sem_fold_constants(node->as.array_literal.elements[i]);
+                sem_fold_constants(ctx, node->as.array_literal.elements[i]);
             break;
-        case AST_LEN_EXPR: sem_fold_constants(node->as.len_expr.operand); break;
-        case AST_LOOP: sem_fold_constants(node->as.loop_stmt.body); break;
+        case AST_LEN_EXPR: sem_fold_constants(ctx, node->as.len_expr.operand); break;
+        case AST_LOOP: sem_fold_constants(ctx, node->as.loop_stmt.body); break;
         case AST_MATCH:
-            sem_fold_constants(node->as.match_expr.value);
+            sem_fold_constants(ctx, node->as.match_expr.value);
             for (int i = 0; i < node->as.match_expr.case_count; i++) {
-                sem_fold_constants(node->as.match_expr.cases[i].pattern);
-                sem_fold_constants(node->as.match_expr.cases[i].result);
+                sem_fold_constants(ctx, node->as.match_expr.cases[i].pattern);
+                sem_fold_constants(ctx, node->as.match_expr.cases[i].result);
+            }
+            /* Exhaustiveness checks */
+            if (ctx) {
+                type_info_t *val_type = sem_infer_expr(ctx, node->as.match_expr.value);
+                /* Result<T,E> check */
+                if (val_type && val_type->kind == TYPE_RESULT) {
+                    int has_ok = 0, has_err = 0;
+                    for (int i = 0; i < node->as.match_expr.case_count; i++) {
+                        ast_node_t *pat = node->as.match_expr.cases[i].pattern;
+                        if (pat->type == AST_OK_EXPR) has_ok = 1;
+                        if (pat->type == AST_ERR_EXPR) has_err = 1;
+                    }
+                    if (!has_ok)
+                        sem_error(ctx, node->line, node->col, "match missing Ok(_) case");
+                    if (!has_err)
+                        sem_error(ctx, node->line, node->col, "match missing Err(_) case");
+                }
+                /* Enum exhaustiveness check */
+                if (val_type && val_type->kind == TYPE_ENUM && val_type->struct_name) {
+                    int reg_idx = -1;
+                    for (int ei = 0; ei < ctx->enum_count; ei++) {
+                        if (strcmp(ctx->enum_registry[ei].name, val_type->struct_name) == 0) {
+                            reg_idx = ei;
+                            break;
+                        }
+                    }
+                    if (reg_idx >= 0) {
+                        int has_wildcard = 0;
+                        int *covered = SAFE_CALLOC(ctx->enum_registry[reg_idx].variant_count, sizeof(int));
+                        for (int i = 0; i < node->as.match_expr.case_count; i++) {
+                            ast_node_t *pat = node->as.match_expr.cases[i].pattern;
+                            if (pat->type == AST_IDENT && pat->as.ident.name_len == 1
+                                && pat->as.ident.name[0] == '_') {
+                                has_wildcard = 1;
+                            } else if (pat->type == AST_BINARY_OP &&
+                                       pat->as.binary.op == TOKEN_COLONCOLON &&
+                                       pat->as.binary.left->type == AST_IDENT &&
+                                       pat->as.binary.right->type == AST_IDENT) {
+                                for (int vi = 0; vi < ctx->enum_registry[reg_idx].variant_count; vi++) {
+                                    size_t vlen = strlen(ctx->enum_registry[reg_idx].variants[vi]);
+                                    if ((size_t)pat->as.binary.right->as.ident.name_len == vlen &&
+                                        memcmp(pat->as.binary.right->as.ident.name,
+                                               ctx->enum_registry[reg_idx].variants[vi], vlen) == 0) {
+                                        covered[vi] = 1;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (!has_wildcard) {
+                            for (int vi = 0; vi < ctx->enum_registry[reg_idx].variant_count; vi++) {
+                                if (!covered[vi]) {
+                                    sem_error(ctx, node->line, node->col,
+                                        "match not exhaustive: missing %s::%s",
+                                        val_type->struct_name,
+                                        ctx->enum_registry[reg_idx].variants[vi]);
+                                }
+                            }
+                        }
+                        free(covered);
+                    }
+                }
             }
             break;
         case AST_FN_DECL:
-            sem_fold_constants(node->as.fn_decl.body);
+            sem_fold_constants(ctx, node->as.fn_decl.body);
             break;
         case AST_RESULT_TYPE:
-            sem_fold_constants(node->as.result_type.ok_type);
-            sem_fold_constants(node->as.result_type.err_type);
+            sem_fold_constants(ctx, node->as.result_type.ok_type);
+            sem_fold_constants(ctx, node->as.result_type.err_type);
             break;
         case AST_PROGRAM:
             for (int i = 0; i < node->as.program.count; i++)
-                sem_fold_constants(node->as.program.declarations[i]);
+                sem_fold_constants(ctx, node->as.program.declarations[i]);
             break;
         default: break;
     }
@@ -675,7 +792,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             type_info_t *val_type = NULL;
             if (node->as.let.value) {
                 val_type = sem_infer_expr(ctx, node->as.let.value);
-                sem_fold_constants(node->as.let.value);
+                sem_fold_constants(ctx, node->as.let.value);
                 if (node->as.let.value->type == AST_INT_LIT)
                     val_type = type_new(TYPE_I64);
             }
@@ -698,7 +815,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
         }
         case AST_ASSIGN: {
             type_info_t *val_type = sem_infer_expr(ctx, node->as.assign.value);
-            sem_fold_constants(node->as.assign.value);
+            sem_fold_constants(ctx, node->as.assign.value);
             if (node->as.assign.target->type == AST_IDENT) {
                 char name[MAX_IDENT_LEN];
                 snprintf(name, sizeof(name), "%.*s",
@@ -779,7 +896,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             break;
         }
         case AST_IF:
-            sem_fold_constants(node->as.if_stmt.condition);
+            sem_fold_constants(ctx, node->as.if_stmt.condition);
             sem_block(ctx, node->as.if_stmt.then_block);
             if (node->as.if_stmt.else_block) {
                 if (node->as.if_stmt.else_block->type == AST_IF)
@@ -789,11 +906,11 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             }
             break;
         case AST_WHILE:
-            sem_fold_constants(node->as.while_stmt.condition);
+            sem_fold_constants(ctx, node->as.while_stmt.condition);
             sem_block(ctx, node->as.while_stmt.body);
             break;
         case AST_FOR:
-            sem_fold_constants(node->as.for_stmt.iterable);
+            sem_fold_constants(ctx, node->as.for_stmt.iterable);
             {
                 scope_t *old = ctx->current_scope;
                 ctx->current_scope = scope_new(old);
@@ -807,43 +924,29 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             }
             break;
         case AST_MATCH: {
-            sem_fold_constants(node->as.match_expr.value);
-            type_info_t *val_type = sem_infer_expr(ctx, node->as.match_expr.value);
+            sem_fold_constants(ctx, node->as.match_expr.value);
             for (int i = 0; i < node->as.match_expr.case_count; i++) {
-                sem_fold_constants(node->as.match_expr.cases[i].pattern);
-                sem_fold_constants(node->as.match_expr.cases[i].result);
-            }
-            /* Check exhaustive coverage for Result<T, E> matches */
-            if (val_type && val_type->kind == TYPE_RESULT) {
-                int has_ok = 0, has_err = 0;
-                for (int i = 0; i < node->as.match_expr.case_count; i++) {
-                    ast_node_t *pat = node->as.match_expr.cases[i].pattern;
-                    if (pat->type == AST_OK_EXPR) has_ok = 1;
-                    if (pat->type == AST_ERR_EXPR) has_err = 1;
-                }
-                if (!has_ok)
-                    sem_error(ctx, node->line, node->col, "match missing Ok(_) case");
-                if (!has_err)
-                    sem_error(ctx, node->line, node->col, "match missing Err(_) case");
+                sem_fold_constants(ctx, node->as.match_expr.cases[i].pattern);
+                sem_fold_constants(ctx, node->as.match_expr.cases[i].result);
             }
             break;
         }
         case AST_DEFER:
-            sem_fold_constants(node->as.defer_stmt.expr);
+            sem_fold_constants(ctx, node->as.defer_stmt.expr);
             break;
         case AST_TRY_EXPR:
-            sem_fold_constants(node->as.try_expr.operand);
+            sem_fold_constants(ctx, node->as.try_expr.operand);
             break;
         case AST_CATCH_EXPR:
-            sem_fold_constants(node->as.catch_expr.operand);
+            sem_fold_constants(ctx, node->as.catch_expr.operand);
             sem_block(ctx, node->as.catch_expr.handler);
             break;
         case AST_PANIC_EXPR:
-            sem_fold_constants(node->as.panic_expr.message);
+            sem_fold_constants(ctx, node->as.panic_expr.message);
             break;
         case AST_ASSERT_EXPR:
-            sem_fold_constants(node->as.assert_expr.condition);
-            sem_fold_constants(node->as.assert_expr.message);
+            sem_fold_constants(ctx, node->as.assert_expr.condition);
+            sem_fold_constants(ctx, node->as.assert_expr.message);
             break;
         case AST_STRUCT_DECL: {
             /* Register struct fields in type system */
@@ -872,6 +975,23 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             t->struct_name = SAFE_STRNDUP(node->as.enum_decl.name, node->as.enum_decl.name_len);
             /* Register in scope */
             scope_add(ctx->current_scope, t->struct_name, t, 0);
+            /* Register variants in enum registry for exhaustiveness checking */
+            if (ctx->enum_count >= ctx->enum_cap) {
+                ctx->enum_cap = ctx->enum_cap ? ctx->enum_cap * 2 : 8;
+                ctx->enum_registry = SAFE_REALLOC(ctx->enum_registry,
+                    sizeof(*ctx->enum_registry) * ctx->enum_cap);
+            }
+            ctx->enum_registry[ctx->enum_count].name = SAFE_STRNDUP(
+                node->as.enum_decl.name, node->as.enum_decl.name_len);
+            ctx->enum_registry[ctx->enum_count].variant_count = node->as.enum_decl.variant_count;
+            ctx->enum_registry[ctx->enum_count].variants = SAFE_CALLOC(
+                node->as.enum_decl.variant_count, sizeof(char*));
+            for (int vi = 0; vi < node->as.enum_decl.variant_count; vi++) {
+                ctx->enum_registry[ctx->enum_count].variants[vi] = SAFE_STRNDUP(
+                    node->as.enum_decl.variants[vi].name,
+                    node->as.enum_decl.variants[vi].name_len);
+            }
+            ctx->enum_count++;
             break;
         }
         case AST_IMPORT_DECL:
@@ -886,7 +1006,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             sem_block(ctx, node);
             break;
         default:
-            sem_fold_constants(node);
+            sem_fold_constants(ctx, node);
             break;
     }
 }

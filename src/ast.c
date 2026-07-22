@@ -76,6 +76,7 @@ void free_node(ast_node_t *n) {
         case AST_OK_EXPR: free_node(n->as.ok_expr.value); break;
         case AST_ERR_EXPR: free_node(n->as.err_expr.value); break;
         case AST_RESULT_TYPE: free_node(n->as.result_type.ok_type); free_node(n->as.result_type.err_type); break;
+        case AST_ARRAY_TYPE: free_node(n->as.array_type.element_type); free_node(n->as.array_type.length); break;
         case AST_IMPL_DECL: free(n->as.impl_decl.type_name);
             for (int mi = 0; mi < n->as.impl_decl.method_count; mi++) free_node(n->as.impl_decl.methods[mi]);
             free(n->as.impl_decl.methods); break;

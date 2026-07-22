@@ -442,7 +442,7 @@ let x = 42           // Parse error: expected ':'
 fn add(a, b) { a+b } // Parse error: expected ':'
 ```
 
-**Design decision:** Explicit types improve code readability and catch errors early. Type inference is available but not required.
+**Design decision:** Explicit types improve code readability and catch errors early. All variables and function parameters require explicit type annotations.
 
 ---
 

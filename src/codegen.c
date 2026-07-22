@@ -6,6 +6,26 @@
 #include <stdint.h>
 #include "codegen_internal.h"
 
+/* Check if an expression has an unsigned integer type */
+static int expr_is_unsigned(codegen_t *cg, ast_node_t *n) {
+    (void)cg;
+    if (n && n->typed) {
+        return n->typed->kind >= TYPE_U8 && n->typed->kind <= TYPE_U64;
+    }
+    return 0;
+}
+
+/* Get element size in bytes for a type */
+static int type_elem_size(type_info_t *t) {
+    if (!t) return 8;
+    switch (t->kind) {
+        case TYPE_I8: case TYPE_U8: case TYPE_BOOL: case TYPE_CHAR: return 1;
+        case TYPE_I16: case TYPE_U16: return 2;
+        case TYPE_I32: case TYPE_U32: case TYPE_F32: return 4;
+        default: return 8;
+    }
+}
+
 /* ============================================================
  * gen_print_call — compile-time print dispatch
  * ============================================================ */
@@ -306,19 +326,30 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
                         { int dz_label = new_label(cg);
                           emit(cg, "jnz L%d", dz_label);
                           emit(cg, "lea rdi, [rel div_zero_msg]");
-                          emit(cg, "xor rsi, rsi");
-                          emit(cg, "xor rdx, rdx");
+                          emit(cg, "mov rsi, %d", n->line);
+                          if (cg->source_file)
+                              emit(cg, "lea rdx, [rel _src_file]");
+                          else
+                              emit(cg, "xor rdx, rdx");
                           add_extern(cg, "panic_handler");
                           add_extern(cg, "div_zero_msg");
                           fprintf(cg->output, "    call panic_handler\n");
                           fprintf(cg->output, "L%d:\n", dz_label); }
-                        emit(cg, "cqo"); emit(cg, "idiv rcx"); break;
+                        if (expr_is_unsigned(cg, n->as.binary.left)) {
+                            emit(cg, "xor rdx, rdx"); emit(cg, "div rcx");
+                        } else {
+                            emit(cg, "cqo"); emit(cg, "idiv rcx");
+                        } break;
                     case TOKEN_EQ: emit(cg, "cmp rax, rcx"); emit(cg, "sete al"); emit(cg, "movzx rax, al"); break;
                     case TOKEN_NEQ: emit(cg, "cmp rax, rcx"); emit(cg, "setne al"); emit(cg, "movzx rax, al"); break;
-                    case TOKEN_LT: emit(cg, "cmp rax, rcx"); emit(cg, "setl al"); emit(cg, "movzx rax, al"); break;
-                    case TOKEN_GT: emit(cg, "cmp rax, rcx"); emit(cg, "setg al"); emit(cg, "movzx rax, al"); break;
-                    case TOKEN_LTE: emit(cg, "cmp rax, rcx"); emit(cg, "setle al"); emit(cg, "movzx rax, al"); break;
-                    case TOKEN_GTE: emit(cg, "cmp rax, rcx"); emit(cg, "setge al"); emit(cg, "movzx rax, al"); break;
+                    case TOKEN_LT: { int u = expr_is_unsigned(cg, n->as.binary.left);
+                        emit(cg, "cmp rax, rcx"); emit(cg, u ? "setb al" : "setl al"); emit(cg, "movzx rax, al"); break; }
+                    case TOKEN_GT: { int u = expr_is_unsigned(cg, n->as.binary.left);
+                        emit(cg, "cmp rax, rcx"); emit(cg, u ? "seta al" : "setg al"); emit(cg, "movzx rax, al"); break; }
+                    case TOKEN_LTE: { int u = expr_is_unsigned(cg, n->as.binary.left);
+                        emit(cg, "cmp rax, rcx"); emit(cg, u ? "setbe al" : "setle al"); emit(cg, "movzx rax, al"); break; }
+                    case TOKEN_GTE: { int u = expr_is_unsigned(cg, n->as.binary.left);
+                        emit(cg, "cmp rax, rcx"); emit(cg, u ? "setae al" : "setge al"); emit(cg, "movzx rax, al"); break; }
                     case TOKEN_AND: emit(cg, "and rax, rcx"); break;
                     case TOKEN_OR: emit(cg, "or rax, rcx"); break;
                     case TOKEN_PERCENT:
@@ -326,12 +357,19 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
                         { int dz_label = new_label(cg);
                           emit(cg, "jnz L%d", dz_label);
                           emit(cg, "lea rdi, [rel div_zero_msg]");
-                          emit(cg, "xor rsi, rsi");
-                          emit(cg, "xor rdx, rdx");
+                          emit(cg, "mov rsi, %d", n->line);
+                          if (cg->source_file)
+                              emit(cg, "lea rdx, [rel _src_file]");
+                          else
+                              emit(cg, "xor rdx, rdx");
                           add_extern(cg, "panic_handler");
                           fprintf(cg->output, "    call panic_handler\n");
                           fprintf(cg->output, "L%d:\n", dz_label); }
-                        emit(cg, "xor rdx, rdx"); emit(cg, "div rcx"); emit(cg, "mov rax, rdx"); break;
+                        if (expr_is_unsigned(cg, n->as.binary.left)) {
+                            emit(cg, "xor rdx, rdx"); emit(cg, "div rcx"); emit(cg, "mov rax, rdx");
+                        } else {
+                            emit(cg, "cqo"); emit(cg, "idiv rcx"); emit(cg, "mov rax, rdx");
+                        } break;
                     default: break;
                 }
             } } break;
@@ -472,7 +510,29 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
                     if (!is_stdlib_module(cg, mod->as.ident.name, mod->as.ident.name_len))
                         pipe_is_user = 1;
                 }
-                emit_call(cg, callee->as.call.callee, all_args, total, pipe_is_user ? 1 : 0);
+                /* Special case: array_push needs elem_size in rcx */
+                if (callee->as.call.callee->type == AST_IDENT &&
+                    callee->as.call.callee->as.ident.name_len == 10 &&
+                    memcmp(callee->as.call.callee->as.ident.name, "array_push", 10) == 0) {
+                    int es = 8;
+                    if (n->as.pipe.left->typed && n->as.pipe.left->typed->kind == TYPE_ARRAY
+                        && n->as.pipe.left->typed->base)
+                        es = type_elem_size(n->as.pipe.left->typed->base);
+                    /* Emit call manually: rdi=arr, rsi=elem, rcx=elem_size */
+                    emit(cg, "push rbx");
+                    emit(cg, "push rbx");
+                    gen_expr(cg, all_args[0]); /* arr */
+                    emit(cg, "mov rdi, rax");
+                    gen_expr(cg, all_args[1]); /* elem */
+                    emit(cg, "mov rsi, rax");
+                    emit(cg, "mov rcx, %d", es);
+                    emit(cg, "pop rbx");
+                    emit(cg, "pop rbx");
+                    add_extern(cg, "array_push");
+                    fprintf(cg->output, "    call array_push\n");
+                } else {
+                    emit_call(cg, callee->as.call.callee, all_args, total, pipe_is_user ? 1 : 0);
+                }
                 free(all_args);
             } else {
                 if (callee->type != AST_IDENT) {
@@ -496,7 +556,10 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
             break; }
         case AST_ARRAY_LITERAL: {
             int count = n->as.array_literal.count;
-            emit(cg, "mov rdi, 8");
+            int elem_size = 8;
+            if (n->typed && n->typed->kind == TYPE_ARRAY && n->typed->base)
+                elem_size = type_elem_size(n->typed->base);
+            emit(cg, "mov rdi, %d", elem_size);
             emit(cg, "mov rsi, %d", count);
             add_extern(cg, "with_capacity");
             fprintf(cg->output, "    call with_capacity\n");
@@ -505,6 +568,7 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
                 gen_expr(cg, n->as.array_literal.elements[i]);
                 emit(cg, "mov rsi, rax");
                 emit(cg, "pop rdi");
+                emit(cg, "mov rcx, %d", elem_size);
                 add_extern(cg, "array_push");
                 fprintf(cg->output, "    call array_push\n");
             }
@@ -646,6 +710,7 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
                     emit(cg, "mov rdi, [rbp-%d]", env_slot);
                     emit(cg, "mov rax, [rbp-%d]", capture_offsets[ci]);
                     emit(cg, "mov rsi, rax");
+                    emit(cg, "mov rcx, 8");
                     add_extern(cg, "array_push");
                     fprintf(cg->output, "    call array_push\n");
                     emit(cg, "mov [rbp-%d], rax", env_slot);
@@ -1118,8 +1183,8 @@ void gen_stmt(codegen_t *cg, ast_node_t *n) {
                 char *old_name = method->as.fn_decl.name;
                 size_t old_len = method->as.fn_decl.name_len;
                 char new_name[MAX_IDENT_LEN];
-                snprintf(new_name, sizeof(new_name), "%s_%.*s", type_name,
-                    (int)old_len, old_name);
+                buf_check(cg, snprintf(new_name, sizeof(new_name), "%s_%.*s", type_name,
+                    (int)old_len, old_name), sizeof(new_name), "method name");
                 method->as.fn_decl.name = SAFE_STRDUP(new_name);
                 method->as.fn_decl.name_len = strlen(new_name);
                 gen_fn_decl(cg, method);
@@ -1169,18 +1234,22 @@ void gen_stmt(codegen_t *cg, ast_node_t *n) {
             emit(cg, "ret");
 
             char fn_name[MAX_IDENT_LEN];
-            snprintf(fn_name, sizeof(fn_name), "%s_tag", enum_name);
+            buf_check(cg, snprintf(fn_name, sizeof(fn_name), "%s_tag", enum_name),
+                sizeof(fn_name), "enum function name");
             add_extern(cg, fn_name);
-            snprintf(fn_name, sizeof(fn_name), "%s_name", enum_name);
+            buf_check(cg, snprintf(fn_name, sizeof(fn_name), "%s_name", enum_name),
+                sizeof(fn_name), "enum function name");
             add_extern(cg, fn_name);
-            snprintf(fn_name, sizeof(fn_name), "%s_count", enum_name);
+            buf_check(cg, snprintf(fn_name, sizeof(fn_name), "%s_count", enum_name),
+                sizeof(fn_name), "enum function name");
             add_extern(cg, fn_name);
 
             for (int i = 0; i < count; i++) {
                 char variant_name[MAX_IDENT_LEN];
-                snprintf(variant_name, sizeof(variant_name), "%.*s",
+                buf_check(cg, snprintf(variant_name, sizeof(variant_name), "%.*s",
                     (int)n->as.enum_decl.variants[i].name_len,
-                    n->as.enum_decl.variants[i].name);
+                    n->as.enum_decl.variants[i].name),
+                    sizeof(variant_name), "enum variant name");
                 add_extern(cg, variant_name);
             }
             break;

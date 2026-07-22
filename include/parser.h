@@ -9,6 +9,7 @@ typedef struct {
     lexer_t lexer;
     token_t current, peek;
     int has_error;
+    int ever_had_error; /* never reset — tracks if ANY parse error occurred */
     int depth;
 } parser_t;
 

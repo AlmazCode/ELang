@@ -612,7 +612,7 @@ print_arr_i64:
     mov rdx, 1
     syscall
 
-    mov r13, [rbx - 8]     ; r13 = length
+    mov r13, [rbx - 8]      ; r13 = length
     test r13, r13
     jz .pai_done
 
@@ -859,11 +859,11 @@ sys_getpid:
 ; ===== Error Handling Runtime =====
 
 section .data
-panic_prefix: db "panic at ", 0
+panic_prefix: db "panic at "
 panic_prefix_len equ $ - panic_prefix
-panic_colon: db ":", 0
+panic_colon: db ":"
 panic_colon_len equ $ - panic_colon
-panic_sep: db ": ", 0
+panic_sep: db ": "
 panic_sep_len equ $ - panic_sep
 newline_char: db 0x0A
 
@@ -1038,10 +1038,11 @@ assert_handler:
 
 ; ===== Array Runtime =====
 ; Heap-allocated arrays. Layout at pointer:
-;   [ptr - 24] = refcount  (qword)
-;   [ptr - 16] = capacity  (qword)
-;   [ptr - 8]  = length    (qword)
-;   [ptr + 0]  = elem[0], [ptr + 8] = elem[1], ...
+;   [ptr - 32] = elem_size  (qword) — bytes per element
+;   [ptr - 24] = refcount   (qword)
+;   [ptr - 16] = capacity   (qword)
+;   [ptr - 8]  = length     (qword)
+;   [ptr + 0]  = elem[0], [ptr + elem_size] = elem[1], ...
 ; Pointer returned points to elem[0].
 
 section .text
@@ -1124,14 +1125,15 @@ create:
     mov rbx, rdi
     mov r12, rsi
     imul rdi, rsi
-    add rdi, 24             ; 24-byte header (refcount + capacity + length)
+    add rdi, 32             ; 32-byte header (elem_size + refcount + capacity + length)
     call _bump_alloc
     test rax, rax
     jz .ac_fail
-    mov qword [rax], 1      ; refcount = 1
-    mov [rax + 8], r12      ; capacity = count
-    mov [rax + 16], r12     ; length = count
-    add rax, 24             ; skip header
+    mov [rax], rbx          ; elem_size
+    mov qword [rax + 8], 1  ; refcount = 1
+    mov [rax + 16], r12     ; capacity = count
+    mov [rax + 24], r12     ; length = count
+    add rax, 32             ; skip header
     pop r12
     pop rbx
     pop rbp
@@ -1154,14 +1156,15 @@ with_capacity:
     mov rbx, rdi
     mov r12, rsi
     imul rdi, rsi
-    add rdi, 24
+    add rdi, 32
     call _bump_alloc
     test rax, rax
     jz .awc_fail
-    mov qword [rax], 1      ; refcount = 1
-    mov [rax + 8], r12      ; capacity
-    mov qword [rax + 16], 0 ; length = 0
-    add rax, 24
+    mov [rax], rbx          ; elem_size
+    mov qword [rax + 8], 1  ; refcount = 1
+    mov [rax + 16], r12     ; capacity
+    mov qword [rax + 24], 0 ; length = 0
+    add rax, 32
     pop r12
     pop rbx
     pop rbp
@@ -1178,12 +1181,14 @@ global get
 get:
     push rbx
     mov rbx, rdi
-    mov rdx, [rdi - 8]
+    mov rdx, [rdi - 8]      ; length
     test rsi, rsi
     js .oob
     cmp rsi, rdx
     jge .oob
-    mov rax, [rbx + rsi*8]
+    mov rax, [rdi - 32]     ; elem_size
+    imul rax, rsi           ; offset = index * elem_size
+    mov rax, [rbx + rax]    ; load element
     pop rbx
     ret
 .oob:
@@ -1195,11 +1200,11 @@ get:
 ; len(array_ptr) -> length
 global len
 len:
-    mov rax, [rdi - 8]
+    mov rax, [rdi - 8]      ; length
     ret
 
-; push(array_ptr, elem) -> new_array_ptr
-; rdi = array_ptr, rsi = elem
+; push(array_ptr, elem, elem_size) -> new_array_ptr
+; rdi = array_ptr, rsi = elem, rcx = elem_size (bytes per element)
 ; NOTE: named array_push to avoid conflict with x86 'push' instruction
 global array_push
 array_push:
@@ -1209,10 +1214,12 @@ array_push:
     push r12
     push r13
     push r14
+    push r15
     mov rbx, rdi
     mov r12, rsi
-    mov r13, [rdi - 8]
-    mov r14, [rdi - 16]
+    mov r15, rcx            ; r15 = elem_size
+    mov r13, [rdi - 8]      ; length
+    mov r14, [rdi - 16]     ; capacity
     cmp r13, r14
     jl .push_store
     mov rcx, r14
@@ -1224,27 +1231,34 @@ array_push:
     shl rcx, 1
 .push_have_cap:
     push rcx
-    lea rdi, [rcx*8 + 16]
+    mov rdi, rcx
+    imul rdi, r15
+    add rdi, 32             ; 32-byte header
     call _bump_alloc
     pop rcx
     test rax, rax
     jz .push_fail
-    mov r8, rax            ; save new ptr in r8 (not rax, which gets clobbered by memmove)
+    mov r8, rax            ; save new ptr
     mov rdi, rax
-    lea rsi, [rbx - 16]
+    lea rsi, [rbx - 32]    ; copy from old header
     mov rdx, r13
-    shl rdx, 3
-    add rdx, 16
+    imul rdx, r15          ; rdx = length * elem_size
+    add rdx, 32            ; + header
     call _memmove
     mov rax, r8            ; restore new ptr
-    mov [rax], rcx
+    mov [rax], r15         ; store elem_size at offset 0
+    mov [rax+16], rcx      ; store new capacity at offset 16
     mov rbx, rax
-    add rbx, 16
+    add rbx, 32            ; rbx = pointer to elem[0]
 .push_store:
-    mov [rbx + r13*8], r12
+    ; Store element at [rbx + r13 * elem_size]
+    mov rax, r13
+    imul rax, r15
+    mov [rbx + rax], r12
     inc r13
-    mov [rbx - 8], r13
+    mov [rbx - 8], r13     ; update length
     mov rax, rbx
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -1262,12 +1276,14 @@ global pop
 pop:
     push rbx
     mov rbx, rdi
-    mov rax, [rdi - 8]
+    mov rax, [rdi - 8]      ; length
     test rax, rax
     jz .pop_empty
     dec rax
-    mov [rdi - 8], rax
-    mov rax, [rbx + rax*8]
+    mov [rdi - 8], rax      ; update length
+    mov rcx, [rdi - 32]     ; elem_size
+    imul rcx, rax
+    mov rax, [rbx + rcx]    ; load element
     pop rbx
     ret
 .pop_empty:
@@ -1289,7 +1305,7 @@ slice:
     mov rbx, rdi
     mov r12, rsi
     mov r13, rdx
-    mov rcx, [rbx - 8]
+    mov rcx, [rbx - 8]      ; length
     cmp r12, 0
     jl .slice_oob
     cmp r13, rcx
@@ -1298,14 +1314,17 @@ slice:
     jg .slice_oob
     mov r14, r13
     sub r14, r12
-    mov rdi, 8
+    mov rdi, [rbx - 32]     ; elem_size
     mov rsi, r14
     call create
     push rax
     mov rdi, rax
-    lea rsi, [rbx + r12*8]
+    ; source = rbx + r12 * elem_size
+    mov rcx, [rbx - 32]     ; elem_size
+    imul rcx, r12
+    lea rsi, [rbx + rcx]
     mov rdx, r14
-    shl rdx, 3
+    imul rdx, [rbx - 32]    ; count * elem_size
     call _memmove
     pop rax
     pop r14
@@ -1331,24 +1350,25 @@ concat:
     push r13
     mov rbx, rdi
     mov r12, rsi
-    mov r13, [rbx - 8]
-    add r13, [r12 - 8]
-    mov rdi, 8
+    mov r13, [rbx - 8]      ; a.length
+    add r13, [r12 - 8]      ; + b.length
+    mov rdi, [rbx - 32]     ; elem_size (from a)
     mov rsi, r13
     call create
     push rax
     mov rdi, rax
     mov rsi, rbx
-    mov rdx, [rbx - 8]
-    shl rdx, 3
+    mov rdx, [rbx - 8]     ; a.length
+    imul rdx, [rbx - 32]    ; * elem_size
     call _memmove
     pop rax
     push rax
-    mov rcx, [rbx - 8]
-    lea rdi, [rax + rcx*8]
+    mov rcx, [rbx - 8]     ; a.length
+    imul rcx, [rbx - 32]    ; * elem_size
+    lea rdi, [rax + rcx]
     mov rsi, r12
-    mov rdx, [r12 - 8]
-    shl rdx, 3
+    mov rdx, [r12 - 8]      ; b.length
+    imul rdx, [r12 - 32]    ; * elem_size
     call _memmove
     pop rax
     pop r13
@@ -1509,7 +1529,10 @@ reduce:
     ret
 
 ; free(array_ptr)
-; Decrements refcount. If refcount reaches 0, restores watermark.
+; Decrements refcount. When refcount reaches 0, memory is NOT freed individually
+; because bump allocator doesn't support per-object deallocation.
+; All memory is reclaimed at process exit. For scoped lifetimes, use
+; save_watermark()/restore_watermark() instead.
 global free
 free:
     test rdi, rdi
@@ -1517,11 +1540,6 @@ free:
     mov rax, [rdi - 24]     ; load refcount
     dec rax
     mov [rdi - 24], rax     ; store decremented refcount
-    jnz .free_done          ; if refcount > 0, don't free
-    ; refcount == 0: restore watermark to free all bump memory
-    ; NOTE: this is conservative — it frees ALL bump memory, not just this array.
-    ; For a production allocator, you'd track per-object sizes.
-    ; For now, this is acceptable for a demo compiler.
 .free_done:
     ret
 

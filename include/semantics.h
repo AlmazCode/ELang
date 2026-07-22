@@ -83,6 +83,9 @@ typedef struct {
     /* function table for cross-module resolution */
     struct { char *name; char *module; type_info_t *type; int is_export; } *fn_table;
     int fn_count, fn_cap;
+    /* enum registry for exhaustiveness checking */
+    struct { char *name; char **variants; int variant_count; } *enum_registry;
+    int enum_count, enum_cap;
 } sem_ctx_t;
 
 void sem_init(sem_ctx_t *ctx);
@@ -97,6 +100,6 @@ type_info_t *sem_infer_expr(sem_ctx_t *ctx, ast_node_t *node);
 type_info_t *sem_resolve_type(sem_ctx_t *ctx, ast_node_t *type_node);
 
 /* --- Constant Folding --- */
-void sem_fold_constants(ast_node_t *node);
+void sem_fold_constants(sem_ctx_t *ctx, ast_node_t *node);
 
 #endif

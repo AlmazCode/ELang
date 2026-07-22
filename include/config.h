@@ -12,7 +12,7 @@
 #define MAX_PARSE_DEPTH     2000
 
 /* --- Version --- */
-#define ELANG_VERSION       "0.45.0"
+#define ELANG_VERSION       "0.46.0"
 
 /* --- Safe allocation macros --- */
 #define CHECK_ALLOC(ptr) do { \
