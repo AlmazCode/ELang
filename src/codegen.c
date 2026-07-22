@@ -66,8 +66,20 @@ static void gen_print_call(codegen_t *cg, ast_node_t *n) {
         if (!arg) continue;
 
         const char *fn = NULL;
+        /* Check if expression is unsigned — from typed field or var_types lookup */
+        int is_unsigned = arg->typed && arg->typed->kind >= TYPE_U8 && arg->typed->kind <= TYPE_U64;
+        if (!is_unsigned && arg->type == AST_IDENT) {
+            for (int vi = 0; vi < cg->var_type_count; vi++) {
+                if (strlen(cg->var_types[vi].name) == arg->as.ident.name_len &&
+                    memcmp(cg->var_types[vi].name, arg->as.ident.name, arg->as.ident.name_len) == 0) {
+                    if (cg->var_types[vi].struct_name && cg->var_types[vi].struct_name[0] == 'u')
+                        is_unsigned = 1;
+                    break;
+                }
+            }
+        }
         switch (arg->type) {
-            case AST_INT_LIT: fn = "print_i64"; break;
+            case AST_INT_LIT: fn = is_unsigned ? "print_u64" : "print_i64"; break;
             case AST_FLOAT_LIT: fn = "print_f64"; break;
             case AST_STRING_LIT: fn = "print_str"; break;
             case AST_BOOL_LIT: fn = "print_bool"; break;
@@ -79,7 +91,7 @@ static void gen_print_call(codegen_t *cg, ast_node_t *n) {
                 } else if (arg->as.binary.op == TOKEN_COLONCOLON) {
                     fn = "print_ptr";
                 } else {
-                    fn = "print_i64";
+                    fn = is_unsigned ? "print_u64" : "print_i64";
                 }
                 break;
             case AST_IDENT: {
@@ -91,6 +103,7 @@ static void gen_print_call(codegen_t *cg, ast_node_t *n) {
                         if (sn && strcmp(sn, "string") == 0) fn = "print_str";
                         else if (sn && strcmp(sn, "bool") == 0) fn = "print_bool";
                         else if (sn && (strcmp(sn, "f32") == 0 || strcmp(sn, "f64") == 0)) fn = "print_f64";
+                        else if (sn && sn[0] == 'u') fn = "print_u64";
                         else fn = "print_i64";
                         found_type = 1;
                         break;
@@ -100,11 +113,11 @@ static void gen_print_call(codegen_t *cg, ast_node_t *n) {
                     if (is_user_defined(cg, arg->as.ident.name, arg->as.ident.name_len))
                         fn = "print_ptr";
                     else
-                        fn = "print_i64";
+                        fn = is_unsigned ? "print_u64" : "print_i64";
                 }
                 break;
             }
-            case AST_CALL: fn = "print_i64"; break;
+            case AST_CALL: fn = is_unsigned ? "print_u64" : "print_i64"; break;
             case AST_ARRAY_LITERAL:
                 if (arg->as.array_literal.count > 0) {
                     ast_node_t *first = arg->as.array_literal.elements[0];
@@ -379,6 +392,36 @@ void gen_expr(codegen_t *cg, ast_node_t *n) {
                 memcmp(n->as.call.callee->as.ident.name, "print", 5) == 0) {
                 gen_print_call(cg, n);
                 break;
+            }
+
+            /* Special case: print_int(x) where x is unsigned → print_u64(x) */
+            if (n->as.call.callee->type == AST_IDENT &&
+                n->as.call.callee->as.ident.name_len == 9 &&
+                memcmp(n->as.call.callee->as.ident.name, "print_int", 9) == 0 &&
+                n->as.call.arg_count == 1) {
+                ast_node_t *arg = n->as.call.args[0];
+                int is_u = arg->typed && arg->typed->kind >= TYPE_U8 && arg->typed->kind <= TYPE_U64;
+                if (!is_u && arg->type == AST_IDENT) {
+                    for (int vi = 0; vi < cg->var_type_count; vi++) {
+                        if (strlen(cg->var_types[vi].name) == arg->as.ident.name_len &&
+                            memcmp(cg->var_types[vi].name, arg->as.ident.name, arg->as.ident.name_len) == 0) {
+                            if (cg->var_types[vi].struct_name && cg->var_types[vi].struct_name[0] == 'u')
+                                is_u = 1;
+                            break;
+                        }
+                    }
+                }
+                if (is_u) {
+                    emit(cg, "push rbx");
+                    emit(cg, "push rbx");
+                    gen_expr(cg, arg);
+                    emit(cg, "mov rdi, rax");
+                    emit(cg, "pop rbx");
+                    emit(cg, "pop rbx");
+                    add_extern(cg, "print_u64");
+                    fprintf(cg->output, "    call print_u64\n");
+                    break;
+                }
             }
 
             ast_node_t **resolved_args = NULL;

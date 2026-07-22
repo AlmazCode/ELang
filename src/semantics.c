@@ -896,6 +896,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             break;
         }
         case AST_IF:
+            sem_infer_expr(ctx, node->as.if_stmt.condition);
             sem_fold_constants(ctx, node->as.if_stmt.condition);
             sem_block(ctx, node->as.if_stmt.then_block);
             if (node->as.if_stmt.else_block) {
@@ -906,6 +907,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             }
             break;
         case AST_WHILE:
+            sem_infer_expr(ctx, node->as.while_stmt.condition);
             sem_fold_constants(ctx, node->as.while_stmt.condition);
             sem_block(ctx, node->as.while_stmt.body);
             break;
@@ -924,11 +926,7 @@ static void sem_stmt(sem_ctx_t *ctx, ast_node_t *node) {
             }
             break;
         case AST_MATCH: {
-            sem_fold_constants(ctx, node->as.match_expr.value);
-            for (int i = 0; i < node->as.match_expr.case_count; i++) {
-                sem_fold_constants(ctx, node->as.match_expr.cases[i].pattern);
-                sem_fold_constants(ctx, node->as.match_expr.cases[i].result);
-            }
+            sem_fold_constants(ctx, node);
             break;
         }
         case AST_DEFER:
